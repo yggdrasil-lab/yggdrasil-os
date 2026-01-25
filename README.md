@@ -4,10 +4,18 @@
 
 ## Directory Structure
 
+*   `docker/`: Docker Engine installation and configuration.
 *   `network/`: Host networking fixes and overlay network creation.
 *   `swarm/`: Swarm cluster initialization and management.
 
 ## Setup Instructions
+
+### 0. Install Docker (Bare Metal)
+Run this on a fresh Ubuntu/Debian server to install Docker Engine and configure user permissions.
+
+```bash
+sudo ./docker/install_docker.sh
+```
 
 ### 1. Fix Docker DNS (All Nodes)
 Run this on **every node** (Gaia & Muspelheim) immediately after installing Docker. It prevents the 127.0.0.11 DNS failure after power outages.

@@ -1,0 +1,9 @@
+[Unit]
+Description=Gaia Host Monthly Disk Storage Cleanup
+Documentation=https://github.com/yggdrasil-lab/yggdrasil-os
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gaia-cleanup.sh

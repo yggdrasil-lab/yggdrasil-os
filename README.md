@@ -5,6 +5,7 @@
 ## Directory Structure
 
 *   `docker/`: Docker Engine installation and configuration.
+*   `maintenance/`: Host storage maintenance scripts and systemd timers.
 *   `network/`: Host networking fixes and overlay network creation.
 *   `swarm/`: Swarm cluster initialization and management.
 
@@ -36,4 +37,11 @@ Run this once on the Manager Node to establish the encrypted overlay network.
 
 ```bash
 ./network/create_network.sh
+```
+
+### 4. Setup Monthly Storage Cleanup (Gaia Only)
+Run this on the **Manager Node** (Gaia) to install the autonomous systemd timer that prunes Docker build cache (>7d), removes unused images, and vacuums systemd journals on the 1st of each month at 3 AM.
+
+```bash
+sudo ./maintenance/install_cleanup_timer.sh
 ```

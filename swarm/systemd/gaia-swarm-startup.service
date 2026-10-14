@@ -1,0 +1,14 @@
+[Unit]
+Description=Gaia Swarm Startup & Convergence Orchestrator
+Documentation=https://github.com/yggdrasil-lab/yggdrasil-os
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gaia-swarm-startup.sh
+RemainAfterExit=yes
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

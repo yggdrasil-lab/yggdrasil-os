@@ -69,3 +69,18 @@ curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/mai
 Once installed:
 * **Automatic:** Runs on the 1st of each month at 3:00 AM NZDT via `gaia-cleanup.timer` and self-updates from GitHub before running.
 * **Manual trigger:** Run `sudo gaia-cleanup.sh` from any directory, or run one-off via `curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/maintenance/cleanup_storage.sh | sudo bash`.
+
+### 5. Setup Swarm Startup & Restart Orchestrator (Gaia Only)
+Run this on the **Manager Node** (Gaia) to install the autonomous startup orchestrator and graceful Docker restart CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/swarm/install_startup_service.sh | sudo bash
+```
+
+*(Or locally: `sudo ./swarm/install_startup_service.sh`)*
+
+Once installed:
+* **Automatic Recovery on Boot / Power Failure:** Runs via `gaia-swarm-startup.service` after `docker.service`. It waits for core networking/DNS/registry, monitors service convergence, force-kicks cold-boot backoffs, and prunes dead container debris naturally.
+* **Graceful Docker Restart:** Run `sudo gaia-restart-docker.sh` from any directory. This flushes write buffers (`sync`), restarts the daemon, converges Swarm services, and prunes dead containers so `docker ps -a` stays spotless.
+* **Manual Health Reconciliation:** Run `sudo gaia-swarm-startup.sh` anytime to reconcile services and clear stale task shells.
+

@@ -30,6 +30,15 @@ docker builder prune -a -f --filter "until=168h"
 echo "--- Pruning unused Docker images ---"
 docker image prune -a -f
 
+echo "--- Pruning Hephaestus Docker Registry unreferenced blobs ---"
+REGISTRY_CID=$(docker ps -q --filter label=com.docker.swarm.service.name=hephaestus_registry 2>/dev/null || true)
+if [ -n "$REGISTRY_CID" ]; then
+    echo "Running registry garbage-collect inside container $REGISTRY_CID..."
+    docker exec "$REGISTRY_CID" registry garbage-collect /etc/docker/registry/config.yml -m || true
+else
+    echo "Hephaestus registry container not running on this host; skipping registry GC."
+fi
+
 echo "--- Vacuuming systemd journal logs to 500M ---"
 journalctl --vacuum-size=500M
 

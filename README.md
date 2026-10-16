@@ -4,6 +4,7 @@
 
 ## Directory Structure
 
+*   `deploy/`: Centralized Swarm deployment and secret management scripts (`deploy.sh`, `ensure_secret.sh`, `prune_secrets.sh`).
 *   `docker/`: Docker Engine installation and configuration.
 *   `hosts/`: Bare-metal host directory and storage provisioning for Gaia & Muspelheim.
 *   `maintenance/`: Host storage maintenance scripts and systemd timers.

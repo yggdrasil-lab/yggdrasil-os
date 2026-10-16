@@ -76,11 +76,18 @@ mkdir -p /opt/palworld/data /opt/palworld/backups
 chown -R 1000:1000 /opt/palworld
 echo "  ✓ Palworld directories ready"
 
-echo "=== [8/8] Git Global Optimizations ==="
+echo "=== [8/9] Git Global Optimizations ==="
 git config --global status.submoduleSummary false
 git config --global diff.ignoreSubmodules all
 git config --global submodule.recurse false
 echo "  ✓ Git submodule optimizations applied"
+
+echo "=== [9/9] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
+curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/deploy.sh -o /usr/local/bin/deploy.sh
+curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/ensure_secret.sh -o /usr/local/bin/ensure_secret.sh
+curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh
+chmod +x /usr/local/bin/deploy.sh /usr/local/bin/ensure_secret.sh /usr/local/bin/prune_secrets.sh
+echo "  ✓ Deployment utilities installed to /usr/local/bin"
 
 echo ""
 echo "=============================================================================="

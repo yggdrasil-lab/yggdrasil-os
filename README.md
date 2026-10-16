@@ -23,8 +23,15 @@ Scripts installed locally to `/usr/local/bin` (such as `gaia-cleanup.sh`) automa
 
 ## Setup Instructions
 
-### 0. Install Docker (Bare Metal)
-Run this on a fresh Ubuntu/Debian server to install Docker Engine and configure user permissions:
+### 0. Install Host Prerequisites (All Nodes)
+Run this on a fresh Ubuntu/Debian server to install GitHub CLI (`gh`), `jq`, `curl`, `wget`, `ca-certificates`, and configure cluster GitHub authentication:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/install_prerequisites.sh | sudo bash
+```
+
+### 1. Install Docker (Bare Metal)
+Run this on a fresh server to install Docker Engine and configure user permissions:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/docker/install_docker.sh | sudo bash

@@ -65,8 +65,9 @@ fi
 echo "  ✓ Charon directories ready"
 
 echo "=== [7/10] Setting up Kratos (Workout Tracker) ==="
-mkdir -p /opt/kratos
-chown -R 1000:1000 /opt/kratos
+mkdir -p /opt/kratos/data
+chown 1000:1000 /opt/kratos
+# Note: /opt/kratos/data is managed by PostgreSQL's entrypoint directly (do not recursive chown)
 echo "  ✓ Kratos directories ready"
 
 echo "=== [8/10] Setting up Palworld Game Server ==="

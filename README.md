@@ -4,7 +4,9 @@
 
 ## Directory Structure
 
+*   `deploy/`: Centralized Swarm deployment and secret management scripts (`deploy.sh`, `ensure_secret.sh`, `prune_secrets.sh`).
 *   `docker/`: Docker Engine installation and configuration.
+*   `hosts/`: Bare-metal host directory and storage provisioning for Gaia & Muspelheim.
 *   `maintenance/`: Host storage maintenance scripts and systemd timers.
 *   `network/`: Host networking fixes and overlay network creation.
 *   `swarm/`: Swarm cluster initialization and management.
@@ -83,4 +85,17 @@ Once installed:
 * **Automatic Recovery on Boot / Power Failure:** Runs via `gaia-swarm-startup.service` after `docker.service`. It waits for core networking/DNS/registry, monitors service convergence, force-kicks cold-boot backoffs, and prunes dead container debris naturally.
 * **Graceful Docker Restart:** Run `sudo gaia-restart-docker.sh` from any directory. This flushes write buffers (`sync`), restarts the daemon, converges Swarm services, and prunes dead containers so `docker ps -a` stays spotless.
 * **Manual Health Reconciliation:** Run `sudo gaia-swarm-startup.sh` anytime to reconcile services and clear stale task shells.
+ 
+### 6. Provision Host Directories & Storage (Idempotent)
+Run this whenever setting up a new host or adding service directories (Olympus, Odin, Comics, etc.):
+
+**On Gaia (Manager):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_gaia.sh | sudo bash
+```
+
+**On Muspelheim (Worker):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_muspelheim.sh | sudo bash
+```
 

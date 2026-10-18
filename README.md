@@ -106,3 +106,8 @@ curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hos
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_muspelheim.sh | sudo bash
 ```
 
+Once provisioned on Muspelheim:
+* **Graceful Docker Restart:** Run `sudo muspelheim-restart-docker.sh` from any directory. This flushes storage buffers (`sync`), cleanly stops Apollo Supply downloaders before the VPN drops, restarts the Docker daemon, restores Apollo Supply with VPN health verification, and prunes exited worker container shells.
+* **Boot Persistence for Apollo Supply:** Managed autonomously by `apollo-supply.service` via `/usr/local/bin/apollo-supply-restore.sh`.
+
+

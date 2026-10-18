@@ -11,6 +11,9 @@ set -e
 #   curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_muspelheim.sh | sudo bash
 # ==============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+RAW_BASE="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main"
+
 echo "=== [1/5] Setting up Comics (Komga & Suwayomi) ==="
 mkdir -p /opt/comics/komga /opt/comics/suwayomi
 mkdir -p /mnt/storage/comics/library
@@ -42,8 +45,39 @@ echo "  ✓ Apollo Core (Muspelheim) directories ready"
 
 echo "=== [3/5] Setting up Apollo Supply (VPN Downloader Stack) ==="
 mkdir -p /opt/apollo-supply/gluetun /opt/apollo-supply/qbittorrent /opt/apollo-supply/sabnzbd /opt/apollo-supply/slskd
-chown -R 1000:1000 /opt/apollo-supply
+mkdir -p /mnt/storage/downloads/slskd/.incomplete
+chown -R 1000:1000 /opt/apollo-supply /mnt/storage/downloads/slskd
 echo "  ✓ Apollo Supply directories ready"
+
+echo "  → Installing Apollo Supply boot persistence service..."
+if [ -f "${SCRIPT_DIR}/scripts/apollo-supply-restore.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/apollo-supply-restore.sh" /usr/local/bin/apollo-supply-restore.sh
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/apollo-supply-restore.sh" -o /usr/local/bin/apollo-supply-restore.sh
+    chmod 0755 /usr/local/bin/apollo-supply-restore.sh
+fi
+
+if [ -f "${SCRIPT_DIR}/systemd/apollo-supply.service" ]; then
+    install -m 0644 "${SCRIPT_DIR}/systemd/apollo-supply.service" /etc/systemd/system/apollo-supply.service
+else
+    curl -fsSL "${RAW_BASE}/hosts/systemd/apollo-supply.service" -o /etc/systemd/system/apollo-supply.service
+    chmod 0644 /etc/systemd/system/apollo-supply.service
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    systemctl enable apollo-supply.service
+    echo "  ✓ Apollo Supply persistence service enabled"
+fi
+
+echo "  → Installing Muspelheim graceful Docker restart tool..."
+if [ -f "${SCRIPT_DIR}/scripts/muspelheim-restart-docker.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/muspelheim-restart-docker.sh" /usr/local/bin/muspelheim-restart-docker.sh
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/muspelheim-restart-docker.sh" -o /usr/local/bin/muspelheim-restart-docker.sh
+    chmod 0755 /usr/local/bin/muspelheim-restart-docker.sh
+fi
+echo "  ✓ muspelheim-restart-docker.sh installed to /usr/local/bin"
 
 echo "=== [4/5] Setting up Immich (Photos & AI) ==="
 mkdir -p /mnt/storage/immich/library /opt/immich/model-cache /opt/immich/postgres
@@ -59,4 +93,6 @@ echo "  ✓ Cerberus (Vaultwarden) directories ready"
 echo ""
 echo "=============================================================================="
 echo "✓ Muspelheim Host Provisioning Complete! Ready for deployments."
+echo "You can now run: sudo muspelheim-restart-docker.sh to safely restart Docker."
 echo "=============================================================================="
+

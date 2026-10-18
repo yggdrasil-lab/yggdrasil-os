@@ -1,0 +1,15 @@
+[Unit]
+Description=Apollo Supply Docker Compose Stack
+Wants=docker.service network-online.target
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5s
+ExecStart=/usr/local/bin/apollo-supply-restore.sh
+ExecStop=/usr/bin/docker stop slskd sabnzbd qbittorrent gluetun
+
+[Install]
+WantedBy=multi-user.target

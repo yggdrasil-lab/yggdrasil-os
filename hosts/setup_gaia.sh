@@ -37,21 +37,25 @@ fi
 echo "  ✓ Odin directories ready"
 
 echo "=== [4/10] Setting up Apollo Core (Manager Services) ==="
-APOLLO_GAIA_SERVICES=("jellystat" "jellystat-db" "prowlarr" "seerr" "recyclarr")
+APOLLO_GAIA_SERVICES=("jellystat" "prowlarr" "seerr" "recyclarr")
 for svc in "${APOLLO_GAIA_SERVICES[@]}"; do
     mkdir -p "/opt/apollo-core/${svc}"
     chown -R 1000:1000 "/opt/apollo-core/${svc}"
 done
+mkdir -p /opt/apollo-core/jellystat-db
+# Note: /opt/apollo-core/jellystat-db is managed by PostgreSQL's entrypoint directly (do not recursive chown)
 mkdir -p /mnt/storage/backups/apollo/prowlarr
 chown -R 1000:1000 /mnt/storage/backups/apollo/prowlarr
 echo "  ✓ Apollo Core (Gaia) directories ready"
 
 echo "=== [5/10] Setting up Cerberus (Auth & Identity) ==="
-CERBERUS_SERVICES=("authentik" "authelia" "lldap" "vaultwarden" "postgres")
+CERBERUS_SERVICES=("authentik" "authelia" "lldap" "vaultwarden")
 for svc in "${CERBERUS_SERVICES[@]}"; do
     mkdir -p "/opt/cerberus/${svc}"
     chown -R 1000:1000 "/opt/cerberus/${svc}"
 done
+mkdir -p /opt/cerberus/postgres
+# Note: /opt/cerberus/postgres is managed by PostgreSQL's entrypoint directly (do not recursive chown)
 echo "  ✓ Cerberus directories ready"
 
 echo "=== [6/10] Setting up Charon (Sync & Backup) ==="

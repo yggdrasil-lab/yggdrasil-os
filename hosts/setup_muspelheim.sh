@@ -70,6 +70,15 @@ if command -v systemctl >/dev/null 2>&1; then
     echo "  ✓ Apollo Supply persistence service enabled"
 fi
 
+echo "  → Installing Muspelheim graceful Docker restart tool..."
+if [ -f "${SCRIPT_DIR}/scripts/muspelheim-restart-docker.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/muspelheim-restart-docker.sh" /usr/local/bin/muspelheim-restart-docker.sh
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/muspelheim-restart-docker.sh" -o /usr/local/bin/muspelheim-restart-docker.sh
+    chmod 0755 /usr/local/bin/muspelheim-restart-docker.sh
+fi
+echo "  ✓ muspelheim-restart-docker.sh installed to /usr/local/bin"
+
 echo "=== [4/5] Setting up Immich (Photos & AI) ==="
 mkdir -p /mnt/storage/immich/library /opt/immich/model-cache /opt/immich/postgres
 chown -R 1000:1000 /mnt/storage/immich/library /opt/immich/model-cache
@@ -84,4 +93,6 @@ echo "  ✓ Cerberus (Vaultwarden) directories ready"
 echo ""
 echo "=============================================================================="
 echo "✓ Muspelheim Host Provisioning Complete! Ready for deployments."
+echo "You can now run: sudo muspelheim-restart-docker.sh to safely restart Docker."
 echo "=============================================================================="
+

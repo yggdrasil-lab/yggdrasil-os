@@ -31,6 +31,7 @@ chmod -R 775 /opt/odin/hermes /opt/odin/mnemosyne
 
 # Ensure agy CLI symlink exists if installed in user directory
 TARGET_USER=${SUDO_USER:-$(id -un)}
+TARGET_GROUP="$(id -gn "${TARGET_USER}" 2>/dev/null || echo "${TARGET_USER}")"
 if [ -f "/home/${TARGET_USER}/.local/bin/agy" ]; then
     ln -sf "/home/${TARGET_USER}/.local/bin/agy" /usr/local/bin/agy
 fi
@@ -63,10 +64,15 @@ echo "  ✓ Cerberus directories ready"
 echo "=== [6/10] Setting up Charon (Sync & Backup) ==="
 mkdir -p /opt/charon/rclone/sync /opt/charon/rclone/archive
 chown -R 1000:1000 /opt/charon
-VAULT_PATH="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}/second-brain"
+VAULT_BASE="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}"
+VAULT_PATH="${VAULT_BASE}/second-brain"
 if [ -d "${VAULT_PATH}" ]; then
     chown -R 1000:1000 "${VAULT_PATH}"
     chmod -R o+w "${VAULT_PATH}"
+fi
+if [ -d "${VAULT_BASE}/.git" ]; then
+    chown -R "${TARGET_USER}:${TARGET_GROUP}" "${VAULT_BASE}/.git"
+    echo "  ✓ Vault git repository ownership ensured (${TARGET_USER}:${TARGET_GROUP})"
 fi
 echo "  ✓ Charon directories ready"
 
@@ -85,6 +91,11 @@ echo "=== [9/10] Git Global Optimizations ==="
 git config --global status.submoduleSummary false
 git config --global diff.ignoreSubmodules all
 git config --global submodule.recurse false
+if [ -n "${SUDO_USER}" ] && [ "${SUDO_USER}" != "root" ]; then
+    sudo -u "${TARGET_USER}" git config --global status.submoduleSummary false
+    sudo -u "${TARGET_USER}" git config --global diff.ignoreSubmodules all
+    sudo -u "${TARGET_USER}" git config --global submodule.recurse false
+fi
 echo "  ✓ Git submodule optimizations applied"
 
 echo "=== [10/10] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
@@ -93,6 +104,11 @@ curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/dep
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh
 chmod +x /usr/local/bin/deploy.sh /usr/local/bin/ensure_secret.sh /usr/local/bin/prune_secrets.sh
 echo "  ✓ Deployment utilities installed to /usr/local/bin"
+
+# Final sweep: Ensure non-root ownership of vault git repository
+if [ -d "${VAULT_BASE}/.git" ]; then
+    chown -R "${TARGET_USER}:${TARGET_GROUP}" "${VAULT_BASE}/.git"
+fi
 
 echo ""
 echo "=============================================================================="

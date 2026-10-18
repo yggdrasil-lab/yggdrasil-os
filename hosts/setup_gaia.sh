@@ -2,7 +2,7 @@
 set -e
 
 # ==============================================================================
-# Yggdrasil OS — Gaia Host Setup & Directory Provisioning
+# Yggdrasil OS - Gaia Host Setup & Directory Provisioning
 # ==============================================================================
 # Prepares host paths, permissions, and directories on the Gaia Manager node.
 # Idempotent: safe to run multiple times.
@@ -49,13 +49,15 @@ chown -R 1000:1000 /mnt/storage/backups/apollo/prowlarr
 echo "  ✓ Apollo Core (Gaia) directories ready"
 
 echo "=== [5/10] Setting up Cerberus (Auth & Identity) ==="
-CERBERUS_SERVICES=("authentik" "authelia" "lldap" "vaultwarden")
+CERBERUS_SERVICES=("authentik" "authelia" "lldap")
 for svc in "${CERBERUS_SERVICES[@]}"; do
     mkdir -p "/opt/cerberus/${svc}"
     chown -R 1000:1000 "/opt/cerberus/${svc}"
 done
 mkdir -p /opt/cerberus/postgres
 # Note: /opt/cerberus/postgres is managed by PostgreSQL's entrypoint directly (do not recursive chown)
+mkdir -p /mnt/storage/backups/lldap /mnt/storage/backups/authentik
+chown -R 1000:1000 /mnt/storage/backups/lldap /mnt/storage/backups/authentik
 echo "  ✓ Cerberus directories ready"
 
 echo "=== [6/10] Setting up Charon (Sync & Backup) ==="

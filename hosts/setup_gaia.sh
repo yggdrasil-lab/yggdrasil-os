@@ -66,10 +66,11 @@ mkdir -p /opt/charon/rclone/sync /opt/charon/rclone/archive
 chown -R 1000:1000 /opt/charon
 VAULT_BASE="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}"
 VAULT_PATH="${VAULT_BASE}/second-brain"
-if [ -d "${VAULT_PATH}" ]; then
-    chown -R 1000:1000 "${VAULT_PATH}"
-    chmod -R o+w "${VAULT_PATH}"
+if [ ! -d "${VAULT_PATH}" ]; then
+    mkdir -p "${VAULT_PATH}"
 fi
+chown -R 1000:1000 "${VAULT_PATH}"
+chmod -R o+w "${VAULT_PATH}"
 if [ -d "${VAULT_BASE}/.git" ]; then
     chown -R "${TARGET_USER}:${TARGET_GROUP}" "${VAULT_BASE}/.git"
     echo "  ✓ Vault git repository ownership ensured (${TARGET_USER}:${TARGET_GROUP})"

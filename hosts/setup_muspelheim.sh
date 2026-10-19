@@ -14,13 +14,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 RAW_BASE="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main"
 
-echo "=== [1/5] Setting up Comics (Komga & Suwayomi) ==="
+echo "=== [1/6] Setting up Comics (Komga & Suwayomi) ==="
 mkdir -p /opt/comics/komga /opt/comics/suwayomi
 mkdir -p /mnt/storage/comics/library
 chown -R 1000:1000 /opt/comics /mnt/storage/comics/library
 echo "  ✓ Comics directories ready"
 
-echo "=== [2/5] Setting up Apollo Core (Media & Storage) ==="
+echo "=== [2/6] Setting up Apollo Core (Media & Storage) ==="
 APOLLO_MUSPEL_SERVICES=("jellyfin" "sonarr" "radarr" "lidarr" "audiobookshelf" "bazarr" "shelfarr")
 for svc in "${APOLLO_MUSPEL_SERVICES[@]}"; do
     mkdir -p "/opt/apollo-core/${svc}"
@@ -43,7 +43,7 @@ for bkp in "${APOLLO_BACKUPS[@]}"; do
 done
 echo "  ✓ Apollo Core (Muspelheim) directories ready"
 
-echo "=== [3/5] Setting up Apollo Supply (VPN Downloader Stack) ==="
+echo "=== [3/6] Setting up Apollo Supply (VPN Downloader Stack) ==="
 mkdir -p /opt/apollo-supply/gluetun /opt/apollo-supply/qbittorrent /opt/apollo-supply/sabnzbd /opt/apollo-supply/slskd
 mkdir -p /mnt/storage/downloads/slskd/.incomplete
 chown -R 1000:1000 /opt/apollo-supply /mnt/storage/downloads/slskd
@@ -79,16 +79,21 @@ else
 fi
 echo "  ✓ muspelheim-restart-docker.sh installed to /usr/local/bin"
 
-echo "=== [4/5] Setting up Immich (Photos & AI) ==="
+echo "=== [4/6] Setting up Immich (Photos & AI) ==="
 mkdir -p /mnt/storage/immich/library /opt/immich/model-cache /opt/immich/postgres
 chown -R 1000:1000 /mnt/storage/immich/library /opt/immich/model-cache
 # Note: /opt/immich/postgres is managed by PostgreSQL's entrypoint directly
 echo "  ✓ Immich directories ready"
 
-echo "=== [5/5] Setting up Cerberus (Vaultwarden on Muspelheim) ==="
+echo "=== [5/6] Setting up Cerberus (Vaultwarden on Muspelheim) ==="
 mkdir -p /opt/cerberus/vaultwarden /mnt/storage/backups/vaultwarden
 chown -R 1000:1000 /opt/cerberus/vaultwarden /mnt/storage/backups/vaultwarden
 echo "  ✓ Cerberus (Vaultwarden) directories ready"
+
+echo "=== [6/6] Setting up Charon (Sync & Backup Archive) ==="
+mkdir -p /opt/charon/rclone/archive /mnt/storage/backups
+chown -R 1000:1000 /opt/charon
+echo "  ✓ Charon Archive directories ready"
 
 echo ""
 echo "=============================================================================="

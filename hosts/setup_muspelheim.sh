@@ -14,13 +14,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 RAW_BASE="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main"
 
-if [ -f "${SCRIPT_DIR}/../scripts/notify-discord.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/../scripts/notify-discord.sh" /usr/local/bin/notify-discord.sh
-else
-    curl -fsSL "${RAW_BASE}/scripts/notify-discord.sh" -o /usr/local/bin/notify-discord.sh
-    chmod 0755 /usr/local/bin/notify-discord.sh
-fi
-echo "  ✓ notify-discord.sh installed to /usr/local/bin"
+# Clean up deprecated standalone notify-discord.sh (migrated to central Iris gateway)
+rm -f /usr/local/bin/notify-discord.sh
 
 echo "=== [1/6] Setting up Comics (Komga & Suwayomi) ==="
 mkdir -p /opt/comics/komga /opt/comics/suwayomi

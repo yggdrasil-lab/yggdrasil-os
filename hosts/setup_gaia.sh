@@ -19,6 +19,14 @@ else
     curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/install_prerequisites.sh | bash
 fi
 
+if [ -f "${SCRIPT_DIR}/../scripts/notify-discord.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/../scripts/notify-discord.sh" /usr/local/bin/notify-discord.sh
+else
+    curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/scripts/notify-discord.sh -o /usr/local/bin/notify-discord.sh
+    chmod 0755 /usr/local/bin/notify-discord.sh
+fi
+echo "  ✓ notify-discord.sh installed to /usr/local/bin"
+
 echo "=== [2/10] Setting up Olympus (Ingress & DNS) ==="
 mkdir -p /opt/olympus/adguard/conf /opt/olympus/adguard/work
 chown -R 1000:1000 /opt/olympus/adguard

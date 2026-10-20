@@ -11,7 +11,7 @@ set -e
 #   curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_gaia.sh | sudo bash
 # ==============================================================================
 
-echo "=== [1/10] Installing Host Prerequisites (gh, jq, base tooling) ==="
+echo "=== [1/11] Installing Host Prerequisites (gh, jq, base tooling) ==="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 if [ -f "${SCRIPT_DIR}/install_prerequisites.sh" ]; then
     bash "${SCRIPT_DIR}/install_prerequisites.sh"
@@ -22,12 +22,12 @@ fi
 # Clean up deprecated standalone notify-discord.sh (migrated to central Iris gateway)
 rm -f /usr/local/bin/notify-discord.sh
 
-echo "=== [2/10] Setting up Olympus (Ingress & DNS) ==="
+echo "=== [2/11] Setting up Olympus (Ingress & DNS) ==="
 mkdir -p /opt/olympus/adguard/conf /opt/olympus/adguard/work
 chown -R 1000:1000 /opt/olympus/adguard
 echo "  ✓ Olympus directories ready"
 
-echo "=== [3/10] Setting up Odin (Hermes & AI Lab) ==="
+echo "=== [3/11] Setting up Odin (Hermes & AI Lab) ==="
 mkdir -p /opt/odin/hermes/home /opt/odin/mnemosyne /mnt/storage/backups/odin/hermes
 chown -R 1000:1000 /opt/odin /mnt/storage/backups/odin/hermes
 chmod -R 775 /opt/odin/hermes /opt/odin/mnemosyne
@@ -40,7 +40,7 @@ if [ -f "/home/${TARGET_USER}/.local/bin/agy" ]; then
 fi
 echo "  ✓ Odin directories ready"
 
-echo "=== [4/10] Setting up Apollo Core (Manager Services) ==="
+echo "=== [4/11] Setting up Apollo Core (Manager Services) ==="
 APOLLO_GAIA_SERVICES=("jellystat" "prowlarr" "seerr" "recyclarr")
 for svc in "${APOLLO_GAIA_SERVICES[@]}"; do
     mkdir -p "/opt/apollo-core/${svc}"
@@ -52,7 +52,7 @@ mkdir -p /mnt/storage/backups/apollo/prowlarr
 chown -R 1000:1000 /mnt/storage/backups/apollo/prowlarr
 echo "  ✓ Apollo Core (Gaia) directories ready"
 
-echo "=== [5/10] Setting up Cerberus (Auth & Identity) ==="
+echo "=== [5/11] Setting up Cerberus (Auth & Identity) ==="
 CERBERUS_SERVICES=("authentik" "authelia" "lldap")
 for svc in "${CERBERUS_SERVICES[@]}"; do
     mkdir -p "/opt/cerberus/${svc}"
@@ -64,7 +64,7 @@ mkdir -p /mnt/storage/backups/lldap /mnt/storage/backups/authentik
 chown -R 1000:1000 /mnt/storage/backups/lldap /mnt/storage/backups/authentik
 echo "  ✓ Cerberus directories ready"
 
-echo "=== [6/10] Setting up Charon (Sync & Backup) ==="
+echo "=== [6/11] Setting up Charon (Sync & Backup) ==="
 mkdir -p /opt/charon/rclone/sync /opt/charon/rclone/archive
 chown -R 1000:1000 /opt/charon
 VAULT_BASE="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}"
@@ -80,18 +80,23 @@ if [ -d "${VAULT_BASE}/.git" ]; then
 fi
 echo "  ✓ Charon directories ready"
 
-echo "=== [7/10] Setting up Kratos (Workout Tracker) ==="
+echo "=== [7/11] Setting up Kratos (Workout Tracker) ==="
 mkdir -p /opt/kratos/data
 chown 1000:1000 /opt/kratos
 # Note: /opt/kratos/data is managed by PostgreSQL's entrypoint directly (do not recursive chown)
 echo "  ✓ Kratos directories ready"
 
-echo "=== [8/10] Setting up Palworld Game Server ==="
+echo "=== [8/11] Setting up Palworld Game Server ==="
 mkdir -p /opt/palworld/data /opt/palworld/backups
 chown -R 1000:1000 /opt/palworld
 echo "  ✓ Palworld directories ready"
 
-echo "=== [9/10] Git Global Optimizations ==="
+echo "=== [9/11] Setting up Hephaestus (Private Container Registry) ==="
+mkdir -p /mnt/storage/registry
+chown 1000:1000 /mnt/storage/registry
+echo "  ✓ Hephaestus directories ready"
+
+echo "=== [10/11] Git Global Optimizations ==="
 git config --global status.submoduleSummary false
 git config --global diff.ignoreSubmodules all
 git config --global submodule.recurse false
@@ -102,7 +107,7 @@ if [ -n "${SUDO_USER}" ] && [ "${SUDO_USER}" != "root" ]; then
 fi
 echo "  ✓ Git submodule optimizations applied"
 
-echo "=== [10/10] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
+echo "=== [11/11] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/deploy.sh -o /usr/local/bin/deploy.sh
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/ensure_secret.sh -o /usr/local/bin/ensure_secret.sh
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh

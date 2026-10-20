@@ -94,7 +94,7 @@ Once installed:
 * **Manual Health Reconciliation:** Run `sudo gaia-swarm-startup.sh` anytime to reconcile services and clear stale task shells.
  
 ### 6. Provision Host Directories & Storage (Idempotent)
-Run this whenever setting up a new host or adding service directories (Olympus, Odin, Comics, etc.):
+Run this whenever setting up a new host or adding service directories (Olympus, Odin, Hephaestus, Comics, etc.):
 
 **On Gaia (Manager):**
 ```bash

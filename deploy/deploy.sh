@@ -97,3 +97,60 @@ echo "Deploying ${STACK_NAME} stack to Swarm..."
 docker stack deploy --with-registry-auth --prune $DEPLOY_ARGS "${STACK_NAME}"
 
 echo "Deployment command submitted. Check status with: docker stack services ${STACK_NAME}"
+
+# --- Kanban Auto-Sync ---
+# If this deployment corresponds to an autonomous Kanban card (e.g. [KB-XXXX]),
+# automatically mark the task done and notify its Discord thread.
+if command -v git >/dev/null 2>&1; then
+    CANDIDATES=""
+    CANDIDATES=$(git log -1 --pretty=%B 2>/dev/null | grep -ioE 'kb-[a-f0-9]{8}' || true)
+    if [ -z "$CANDIDATES" ]; then
+        CANDIDATES=$(git log -2 --pretty=%B 2>/dev/null | grep -ioE 'kb-[a-f0-9]{8}' || true)
+    fi
+    if [ -z "$CANDIDATES" ] && command -v gh >/dev/null 2>&1; then
+        PR_NUM=$(git log -1 --pretty=%s 2>/dev/null | grep -oE '#[0-9]+' | tr -d '#' | head -n 1 || true)
+        if [ -n "$PR_NUM" ]; then
+            CANDIDATES=$(gh pr view "$PR_NUM" --json title,body,headRefName --jq '.title + " " + .body + " " + .headRefName' 2>/dev/null | grep -ioE 'kb-[a-f0-9]{8}' || true)
+        fi
+    fi
+
+    # Deduplicate candidate task IDs
+    TASK_IDS=$(echo "$CANDIDATES" | tr '[:upper:]' '[:lower:]' | sort -u | tr '\n' ' ')
+
+    if [ -n "$TASK_IDS" ]; then
+        echo "Found candidate Kanban tasks for deployment: ${TASK_IDS}"
+
+        # Resolve Discord webhook credentials if not already exported
+        DISCORD_HOOK="${KANBAN_DISCORD_WEBHOOK_URL:-}"
+        DISCORD_UID="${DISCORD_USER_ID:-}"
+        if [ -z "$DISCORD_HOOK" ] && command -v docker >/dev/null 2>&1; then
+            DISCORD_HOOK=$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' odin_huginn-gateway 2>/dev/null | grep '^KANBAN_DISCORD_WEBHOOK_URL=' | cut -d'=' -f2- || true)
+        fi
+        if [ -z "$DISCORD_UID" ] && command -v docker >/dev/null 2>&1; then
+            DISCORD_UID=$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' odin_huginn-gateway 2>/dev/null | grep '^DISCORD_USER_ID=' | cut -d'=' -f2- || true)
+        fi
+
+        for TID in $TASK_IDS; do
+            if command -v kanban-gateway >/dev/null 2>&1 && [ -f "/opt/odin/hermes/kanban.db" ]; then
+                echo "Resolving Kanban card ${TID} via local CLI..."
+                KANBAN_DISCORD_WEBHOOK_URL="$DISCORD_HOOK" DISCORD_USER_ID="$DISCORD_UID" kanban-gateway update \
+                    --task-id "$TID" \
+                    --status done \
+                    --message "PR merged to main. Swarm deployment active for ${STACK_NAME}." || true
+            elif command -v docker >/dev/null 2>&1; then
+                echo "Resolving Kanban card ${TID} via Swarm container..."
+                docker run --rm \
+                    -v /opt/odin/hermes:/opt/data \
+                    -e KANBAN_DISCORD_WEBHOOK_URL="$DISCORD_HOOK" \
+                    -e DISCORD_USER_ID="$DISCORD_UID" \
+                    --entrypoint python3 \
+                    registry.tienzo.net/hermes-agent:odin \
+                    /usr/local/bin/kanban_jev_gateway.py update \
+                    --task-id "$TID" \
+                    --status done \
+                    --message "PR merged to main. Swarm deployment active for ${STACK_NAME}." 2>/dev/null || true
+            fi
+        done
+    fi
+fi
+

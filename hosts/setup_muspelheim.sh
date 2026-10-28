@@ -17,8 +17,8 @@ RAW_BASE="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main"
 # Clean up deprecated standalone notify-discord.sh (migrated to central Iris gateway)
 rm -f /usr/local/bin/notify-discord.sh
 
-echo "=== [1/6] Setting up Comics (Komga & Suwayomi) ==="
-mkdir -p /opt/comics/komga /opt/comics/suwayomi
+echo "=== [1/6] Setting up Comics (Komga, Suwayomi & Komf) ==="
+mkdir -p /opt/comics/komga /opt/comics/suwayomi /opt/comics/komf
 mkdir -p /mnt/storage/comics/library
 chown -R 1000:1000 /opt/comics /mnt/storage/comics/library
 echo "  ✓ Comics directories ready"

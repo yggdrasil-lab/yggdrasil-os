@@ -60,6 +60,20 @@ export COMPOSE_PROJECT_NAME="${STACK_NAME}"
 echo "Starting deployment for stack: ${STACK_NAME}"
 echo "Using compose files: ${COMPOSE_FILES[*]}"
 
+# --- Build ---
+if [ "$SKIP_BUILD" = true ]; then
+    echo "Skipping build step..."
+else
+    echo "Building images..."
+    # shellcheck disable=SC2086
+    docker compose $BUILD_ARGS build --pull
+    
+    if [ -n "$REGISTRY_PREFIX" ]; then
+        echo "Pushing images to registry..."
+        docker compose $BUILD_ARGS push
+    fi
+fi
+
 # --- Cleanup ---
 echo "Removing existing ${STACK_NAME} stack..."
 docker stack rm ${STACK_NAME} || true
@@ -76,20 +90,6 @@ while docker network ls | grep -q "${STACK_NAME}_internal"; do
     sleep 2
 done
 
-# --- Build ---
-if [ "$SKIP_BUILD" = true ]; then
-    echo "Skipping build step..."
-else
-    echo "Building images..."
-    # shellcheck disable=SC2086
-    docker compose $BUILD_ARGS build --pull
-    
-    if [ -n "$REGISTRY_PREFIX" ]; then
-        echo "Pushing images to registry..."
-        docker compose $BUILD_ARGS push
-    fi
-fi
-
 # --- Deploy ---
 echo "Deploying ${STACK_NAME} stack to Swarm..."
 # --prune: Remove services that are no longer referenced matched by the compose files
@@ -97,6 +97,22 @@ echo "Deploying ${STACK_NAME} stack to Swarm..."
 docker stack deploy --with-registry-auth --prune $DEPLOY_ARGS "${STACK_NAME}"
 
 echo "Deployment command submitted. Check status with: docker stack services ${STACK_NAME}"
+
+# --- Prune Unused Secrets ---
+echo "Pruning unused versioned Swarm secrets..."
+ALL_SECRETS=$(docker secret ls --format '{{.Name}}' | grep -E '_[0-9a-f]{8}$' || true)
+if [ -n "$ALL_SECRETS" ]; then
+    # shellcheck disable=SC2046
+    USED_SECRETS=$(docker service inspect $(docker service ls -q) --format '{{ range .Spec.TaskTemplate.ContainerSpec.Secrets }}{{ .SecretName }} {{ end }}' 2>/dev/null || true)
+    for SECRET in $ALL_SECRETS; do
+        if echo "$USED_SECRETS" | grep -q "$SECRET"; then
+            echo "[KEEP] $SECRET (In use)"
+        else
+            echo "[DELETE] $SECRET"
+            docker secret rm "$SECRET" || echo "Failed to delete $SECRET"
+        fi
+    done
+fi
 
 # --- Kanban Auto-Sync ---
 # If this deployment corresponds to an autonomous Kanban card (e.g. [KB-XXXX]),

@@ -120,7 +120,14 @@ curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/dep
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/ensure_secret.sh -o /usr/local/bin/ensure_secret.sh
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh
 chmod +x /usr/local/bin/deploy.sh /usr/local/bin/ensure_secret.sh /usr/local/bin/prune_secrets.sh
-echo "  ✓ Deployment utilities installed to /usr/local/bin"
+
+if [ -f "${SCRIPT_DIR}/scripts/charon-restore.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/charon-restore.sh" /usr/local/bin/charon-restore
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/charon-restore.sh" -o /usr/local/bin/charon-restore
+    chmod 0755 /usr/local/bin/charon-restore
+fi
+echo "  ✓ Deployment utilities and Charon restore CLI installed to /usr/local/bin"
 
 # Final sweep: Ensure non-root ownership of vault git repository
 if [ -d "${VAULT_BASE}/.git" ]; then

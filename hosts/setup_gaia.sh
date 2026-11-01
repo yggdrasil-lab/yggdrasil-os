@@ -127,7 +127,14 @@ else
     curl -fsSL "${RAW_BASE}/hosts/scripts/charon-restore.sh" -o /usr/local/bin/charon-restore
     chmod 0755 /usr/local/bin/charon-restore
 fi
-echo "  ✓ Deployment utilities and Charon restore CLI installed to /usr/local/bin"
+
+if [ -f "${SCRIPT_DIR}/scripts/swarm-exec.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/swarm-exec.sh" /usr/local/bin/swarm-exec
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/swarm-exec.sh" -o /usr/local/bin/swarm-exec
+    chmod 0755 /usr/local/bin/swarm-exec
+fi
+echo "  ✓ Deployment utilities, Charon restore CLI, and swarm-exec installed to /usr/local/bin"
 
 # Final sweep: Ensure non-root ownership of vault git repository
 if [ -d "${VAULT_BASE}/.git" ]; then

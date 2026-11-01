@@ -103,7 +103,14 @@ else
     curl -fsSL "${RAW_BASE}/hosts/scripts/charon-restore.sh" -o /usr/local/bin/charon-restore
     chmod 0755 /usr/local/bin/charon-restore
 fi
-echo "  ✓ Charon Archive directories and restore CLI ready"
+
+if [ -f "${SCRIPT_DIR}/scripts/swarm-exec.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/swarm-exec.sh" /usr/local/bin/swarm-exec
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/swarm-exec.sh" -o /usr/local/bin/swarm-exec
+    chmod 0755 /usr/local/bin/swarm-exec
+fi
+echo "  ✓ Charon Archive directories, restore CLI, and swarm-exec ready"
 
 echo ""
 echo "=============================================================================="

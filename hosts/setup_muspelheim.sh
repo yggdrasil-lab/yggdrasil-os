@@ -96,7 +96,14 @@ echo "  ✓ Cerberus (Vaultwarden) directories ready"
 echo "=== [6/6] Setting up Charon (Sync & Backup Archive) ==="
 mkdir -p /opt/charon/rclone/archive /mnt/storage/backups
 chown -R 1000:1000 /opt/charon
-echo "  ✓ Charon Archive directories ready"
+
+if [ -f "${SCRIPT_DIR}/scripts/charon-restore.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/charon-restore.sh" /usr/local/bin/charon-restore
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/charon-restore.sh" -o /usr/local/bin/charon-restore
+    chmod 0755 /usr/local/bin/charon-restore
+fi
+echo "  ✓ Charon Archive directories and restore CLI ready"
 
 echo ""
 echo "=============================================================================="

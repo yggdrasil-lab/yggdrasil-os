@@ -30,6 +30,13 @@ docker builder prune -a -f --filter "until=168h"
 echo "--- Pruning unused Docker images ---"
 docker image prune -a -f
 
+echo "--- Pruning orphaned Docker Swarm overlay network endpoints ---"
+if command -v prune-network-endpoints >/dev/null 2>&1; then
+    prune-network-endpoints --all --force || true
+elif [ -f "$(dirname "$0")/../network/prune_network_endpoints.py" ]; then
+    python3 "$(dirname "$0")/../network/prune_network_endpoints.py" --all --force || true
+fi
+
 echo "--- Pruning Hephaestus Docker Registry unreferenced blobs ---"
 REGISTRY_CID=$(docker ps -q --filter label=com.docker.swarm.service.name=hephaestus_registry 2>/dev/null || true)
 if [ -n "$REGISTRY_CID" ]; then

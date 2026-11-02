@@ -66,6 +66,19 @@ curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/net
 
 *(Or locally: `./network/create_network.sh`)*
 
+### 3.1 Prune Orphaned Overlay Network Endpoints (Reclaim Exhausted IPAM Pools)
+Audits overlay networks (such as `aether-net`) for leaked, stale, or orphaned endpoints left behind by rolling updates and task restarts, force-disconnecting them to reclaim IP addresses without restarting dockerd:
+
+```bash
+# Safe dry-run audit on aether-net:
+prune-network-endpoints
+
+# Force-disconnect and release leaked IP addresses across all overlay networks:
+prune-network-endpoints --all --force
+```
+
+*(Or one-off via curl: `curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/network/prune_network_endpoints.py | python3 - --all --force`)*
+
 ### 4. Setup Monthly Storage Cleanup (Gaia Only)
 Run this on the **Manager Node** (Gaia) to install the autonomous systemd timer that prunes Docker build cache (>7d), removes unused images, and vacuums systemd journals on the 1st of each month at 3 AM:
 

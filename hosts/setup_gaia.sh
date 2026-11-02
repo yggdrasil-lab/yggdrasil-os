@@ -116,6 +116,7 @@ fi
 echo "  ✓ Git submodule optimizations applied"
 
 echo "=== [12/12] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
+RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main}"
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/deploy.sh -o /usr/local/bin/deploy.sh
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/ensure_secret.sh -o /usr/local/bin/ensure_secret.sh
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh
@@ -134,7 +135,14 @@ else
     curl -fsSL "${RAW_BASE}/hosts/scripts/swarm-exec.sh" -o /usr/local/bin/swarm-exec
     chmod 0755 /usr/local/bin/swarm-exec
 fi
-echo "  ✓ Deployment utilities, Charon restore CLI, and swarm-exec installed to /usr/local/bin"
+
+if [ -f "${SCRIPT_DIR}/../network/prune_network_endpoints.py" ]; then
+    install -m 0755 "${SCRIPT_DIR}/../network/prune_network_endpoints.py" /usr/local/bin/prune-network-endpoints
+else
+    curl -fsSL "${RAW_BASE}/network/prune_network_endpoints.py" -o /usr/local/bin/prune-network-endpoints
+    chmod 0755 /usr/local/bin/prune-network-endpoints
+fi
+echo "  ✓ Deployment utilities, Charon restore CLI, swarm-exec, and prune-network-endpoints installed to /usr/local/bin"
 
 # Final sweep: Ensure non-root ownership of vault git repository
 if [ -d "${VAULT_BASE}/.git" ]; then

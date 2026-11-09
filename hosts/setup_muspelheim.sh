@@ -113,7 +113,7 @@ fi
 echo "  ✓ Charon Archive directories, restore CLI, and swarm-exec ready"
 
 echo "=== [7/7] Setting up RomM (Gaming & ROM Warehouse) ==="
-mkdir -p /opt/romm/db /opt/romm/redis /opt/romm/config
+mkdir -p /opt/romm/db /opt/romm/redis /opt/romm/config /opt/romm/syncthing
 mkdir -p /mnt/storage/roms/library /mnt/storage/roms/assets /mnt/storage/roms/resources /mnt/storage/emulation/saves
 chown -R 1000:1000 /opt/romm /mnt/storage/roms /mnt/storage/emulation
 echo "  ✓ RomM directories ready"

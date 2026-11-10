@@ -30,15 +30,31 @@ echo "  ✓ Olympus directories ready"
 echo "=== [3/12] Setting up Odin (Hermes & AI Lab) ==="
 mkdir -p /opt/odin/hermes/home /opt/odin/mnemosyne /mnt/storage/backups/odin/hermes
 chown -R 1000:1000 /opt/odin /mnt/storage/backups/odin/hermes
-chmod -R 775 /opt/odin/hermes /opt/odin/mnemosyne
+chmod -R 775 /opt/odin/mnemosyne
+# Preserve strict private-node socket/profile directory permissions (go-w) for Hermes gateway_runtime_discovery
+chmod 755 /opt/odin/hermes /opt/odin/hermes/profiles /opt/odin/hermes/profiles/* 2>/dev/null || true
+chmod 600 /opt/odin/hermes/gateway.sock /opt/odin/hermes/gateway.lock /opt/odin/hermes/profiles/*/gateway.lock 2>/dev/null || true
 
-# Ensure agy CLI symlink exists if installed in user directory
+# Ensure agy CLI symlink and canonical turnkey CLI symlinks exist in user directory
 TARGET_USER=${SUDO_USER:-$(id -un)}
 TARGET_GROUP="$(id -gn "${TARGET_USER}" 2>/dev/null || echo "${TARGET_USER}")"
-if [ -f "/home/${TARGET_USER}/.local/bin/agy" ]; then
-    ln -sf "/home/${TARGET_USER}/.local/bin/agy" /usr/local/bin/agy
+USER_LOCAL_BIN="/home/${TARGET_USER}/.local/bin"
+mkdir -p "${USER_LOCAL_BIN}"
+if [ -f "${USER_LOCAL_BIN}/agy" ]; then
+    ln -sf "${USER_LOCAL_BIN}/agy" /usr/local/bin/agy
 fi
-echo "  ✓ Odin directories ready"
+VAULT_ROOT="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}"
+ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/morning_copilot_aggregator.py" "${USER_LOCAL_BIN}/morning-copilot"
+ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_consolidate_daemon.py" "${USER_LOCAL_BIN}/mnemosyne-dreaming"
+ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_associative_recall.py" "${USER_LOCAL_BIN}/mnemosyne-associative"
+ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_hygiene_audit.py" "${USER_LOCAL_BIN}/mnemosyne-hygiene-audit"
+ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mimir_code_cli.py" "${USER_LOCAL_BIN}/mimir-code"
+ln -sf "/opt/odin/hermes/skills/devops/forge-pr-workflow/scripts/forseti_visual_gatekeeper.py" "${USER_LOCAL_BIN}/forseti-visual-gatekeeper"
+ln -sf "/opt/odin/hermes/skills/devops/forge-pr-workflow/scripts/publish_pwa_visual_review.py" "${USER_LOCAL_BIN}/publish-pwa-visual-review"
+ln -sf "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py" "${USER_LOCAL_BIN}/kratos-workout"
+ln -sf "${VAULT_ROOT}/.agents/skills/romm-ops/scripts/romm_manage.py" "${USER_LOCAL_BIN}/romm-manage"
+chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}"/* 2>/dev/null || true
+echo "  ✓ Odin directories and turnkey CLI symlinks ready"
 
 echo "=== [4/12] Setting up Apollo Core (Manager Services) ==="
 APOLLO_GAIA_SERVICES=("jellystat" "prowlarr" "seerr" "recyclarr")

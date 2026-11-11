@@ -17,13 +17,13 @@ RAW_BASE="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main"
 # Clean up deprecated standalone notify-discord.sh (migrated to central Iris gateway)
 rm -f /usr/local/bin/notify-discord.sh
 
-echo "=== [1/7] Setting up Comics (Komga, Suwayomi & Komf) ==="
+echo "=== [1/8] Setting up Comics (Komga, Suwayomi & Komf) ==="
 mkdir -p /opt/comics/komga /opt/comics/suwayomi /opt/comics/komf
 mkdir -p /mnt/storage/comics/library
 chown -R 1000:1000 /opt/comics /mnt/storage/comics/library
 echo "  ✓ Comics directories ready"
 
-echo "=== [2/7] Setting up Apollo Core (Media & Storage) ==="
+echo "=== [2/8] Setting up Apollo Core (Media & Storage) ==="
 APOLLO_MUSPEL_SERVICES=("jellyfin" "sonarr" "radarr" "lidarr" "audiobookshelf" "bazarr" "shelfarr")
 for svc in "${APOLLO_MUSPEL_SERVICES[@]}"; do
     mkdir -p "/opt/apollo-core/${svc}"
@@ -46,7 +46,7 @@ for bkp in "${APOLLO_BACKUPS[@]}"; do
 done
 echo "  ✓ Apollo Core (Muspelheim) directories ready"
 
-echo "=== [3/7] Setting up Apollo Supply (VPN Downloader Stack) ==="
+echo "=== [3/8] Setting up Apollo Supply (VPN Downloader Stack) ==="
 mkdir -p /opt/apollo-supply/gluetun /opt/apollo-supply/qbittorrent /opt/apollo-supply/sabnzbd /opt/apollo-supply/slskd
 mkdir -p /mnt/storage/downloads/slskd/.incomplete
 chown -R 1000:1000 /opt/apollo-supply /mnt/storage/downloads/slskd
@@ -82,18 +82,18 @@ else
 fi
 echo "  ✓ muspelheim-restart-docker.sh installed to /usr/local/bin"
 
-echo "=== [4/7] Setting up Immich (Photos & AI) ==="
+echo "=== [4/8] Setting up Immich (Photos & AI) ==="
 mkdir -p /mnt/storage/immich/library /opt/immich/model-cache /opt/immich/postgres
 chown -R 1000:1000 /mnt/storage/immich/library /opt/immich/model-cache
 # Note: /opt/immich/postgres is managed by PostgreSQL's entrypoint directly
 echo "  ✓ Immich directories ready"
 
-echo "=== [5/7] Setting up Cerberus (Vaultwarden on Muspelheim) ==="
+echo "=== [5/8] Setting up Cerberus (Vaultwarden on Muspelheim) ==="
 mkdir -p /opt/cerberus/vaultwarden /mnt/storage/backups/vaultwarden
 chown -R 1000:1000 /opt/cerberus/vaultwarden /mnt/storage/backups/vaultwarden
 echo "  ✓ Cerberus (Vaultwarden) directories ready"
 
-echo "=== [6/7] Setting up Charon (Sync & Backup Archive) ==="
+echo "=== [6/8] Setting up Charon (Sync & Backup Archive) ==="
 mkdir -p /opt/charon/rclone/archive /mnt/storage/backups
 chown -R 1000:1000 /opt/charon
 
@@ -112,11 +112,39 @@ else
 fi
 echo "  ✓ Charon Archive directories, restore CLI, and swarm-exec ready"
 
-echo "=== [7/7] Setting up RomM (Gaming & ROM Warehouse) ==="
+echo "=== [7/8] Setting up RomM (Gaming & ROM Warehouse) ==="
 mkdir -p /opt/romm/db /opt/romm/redis /opt/romm/config /opt/romm/syncthing
 mkdir -p /mnt/storage/roms/library /mnt/storage/roms/assets /mnt/storage/roms/resources /mnt/storage/emulation/saves
 chown -R 1000:1000 /opt/romm /mnt/storage/roms /mnt/storage/emulation
 echo "  ✓ RomM directories ready"
+
+echo "=== [8/8] Setting up GitHub Runner Auto-Update Timer ==="
+if [ -f "${SCRIPT_DIR}/scripts/update-github-runner.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/update-github-runner.sh" /usr/local/bin/update-github-runner.sh
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/update-github-runner.sh" -o /usr/local/bin/update-github-runner.sh
+    chmod 0755 /usr/local/bin/update-github-runner.sh
+fi
+
+if [ -f "${SCRIPT_DIR}/systemd/update-github-runner.service" ]; then
+    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.service" /etc/systemd/system/update-github-runner.service
+else
+    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.service" -o /etc/systemd/system/update-github-runner.service
+    chmod 0644 /etc/systemd/system/update-github-runner.service
+fi
+
+if [ -f "${SCRIPT_DIR}/systemd/update-github-runner.timer" ]; then
+    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.timer" /etc/systemd/system/update-github-runner.timer
+else
+    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.timer" -o /etc/systemd/system/update-github-runner.timer
+    chmod 0644 /etc/systemd/system/update-github-runner.timer
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    systemctl enable --now update-github-runner.timer
+    echo "  ✓ GitHub runner auto-update timer enabled"
+fi
 
 echo ""
 echo "=============================================================================="

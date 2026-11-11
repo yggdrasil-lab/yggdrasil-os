@@ -1,0 +1,10 @@
+[Unit]
+Description=Update Self-Hosted GitHub Runner Container
+Documentation=https://github.com/yggdrasil-lab/yggdrasil-os
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/update-github-runner.sh
+TimeoutStartSec=300

@@ -11,7 +11,7 @@ set -e
 #   curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_gaia.sh | sudo bash
 # ==============================================================================
 
-echo "=== [1/12] Installing Host Prerequisites (gh, jq, base tooling) ==="
+echo "=== [1/13] Installing Host Prerequisites (gh, jq, base tooling) ==="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 if [ -f "${SCRIPT_DIR}/install_prerequisites.sh" ]; then
     bash "${SCRIPT_DIR}/install_prerequisites.sh"
@@ -22,12 +22,12 @@ fi
 # Clean up deprecated standalone notify-discord.sh (migrated to central Iris gateway)
 rm -f /usr/local/bin/notify-discord.sh
 
-echo "=== [2/12] Setting up Olympus (Ingress & DNS) ==="
+echo "=== [2/13] Setting up Olympus (Ingress & DNS) ==="
 mkdir -p /opt/olympus/adguard/conf /opt/olympus/adguard/work
 chown -R 1000:1000 /opt/olympus/adguard
 echo "  ✓ Olympus directories ready"
 
-echo "=== [3/12] Setting up Odin (Hermes & AI Lab) ==="
+echo "=== [3/13] Setting up Odin (Hermes & AI Lab) ==="
 mkdir -p /opt/odin/hermes/home /opt/odin/mnemosyne /mnt/storage/backups/odin/hermes
 chown -R 1000:1000 /opt/odin /mnt/storage/backups/odin/hermes
 chmod -R 775 /opt/odin/mnemosyne
@@ -56,7 +56,7 @@ ln -sf "${VAULT_ROOT}/.agents/skills/romm-ops/scripts/romm_manage.py" "${USER_LO
 chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}"/* 2>/dev/null || true
 echo "  ✓ Odin directories and turnkey CLI symlinks ready"
 
-echo "=== [4/12] Setting up Apollo Core (Manager Services) ==="
+echo "=== [4/13] Setting up Apollo Core (Manager Services) ==="
 APOLLO_GAIA_SERVICES=("jellystat" "prowlarr" "seerr" "recyclarr")
 for svc in "${APOLLO_GAIA_SERVICES[@]}"; do
     mkdir -p "/opt/apollo-core/${svc}"
@@ -68,7 +68,7 @@ mkdir -p /mnt/storage/backups/apollo/prowlarr
 chown -R 1000:1000 /mnt/storage/backups/apollo/prowlarr
 echo "  ✓ Apollo Core (Gaia) directories ready"
 
-echo "=== [5/12] Setting up Cerberus (Auth & Identity) ==="
+echo "=== [5/13] Setting up Cerberus (Auth & Identity) ==="
 CERBERUS_SERVICES=("authentik" "authelia" "lldap")
 for svc in "${CERBERUS_SERVICES[@]}"; do
     mkdir -p "/opt/cerberus/${svc}"
@@ -80,7 +80,7 @@ mkdir -p /mnt/storage/backups/lldap /mnt/storage/backups/authentik
 chown -R 1000:1000 /mnt/storage/backups/lldap /mnt/storage/backups/authentik
 echo "  ✓ Cerberus directories ready"
 
-echo "=== [6/12] Setting up Charon (Sync & Backup) ==="
+echo "=== [6/13] Setting up Charon (Sync & Backup) ==="
 mkdir -p /opt/charon/rclone/sync /opt/charon/rclone/archive
 chown -R 1000:1000 /opt/charon
 VAULT_BASE="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}"
@@ -96,13 +96,13 @@ if [ -d "${VAULT_BASE}/.git" ]; then
 fi
 echo "  ✓ Charon directories ready"
 
-echo "=== [7/12] Setting up Kratos (Workout Tracker) ==="
+echo "=== [7/13] Setting up Kratos (Workout Tracker) ==="
 mkdir -p /opt/kratos/data
 chown 1000:1000 /opt/kratos
 # Note: /opt/kratos/data is managed by PostgreSQL's entrypoint directly (do not recursive chown)
 echo "  ✓ Kratos directories ready"
 
-echo "=== [8/12] Setting up Eir (Health Telemetry & Wearables) ==="
+echo "=== [8/13] Setting up Eir (Health Telemetry & Wearables) ==="
 mkdir -p /opt/eir/data
 chown 1000:1000 /opt/eir
 # Note: /opt/eir/data is managed by PostgreSQL's entrypoint directly (do not recursive chown)
@@ -110,17 +110,17 @@ mkdir -p /mnt/storage/backups/eir
 chown -R 1000:1000 /mnt/storage/backups/eir
 echo "  ✓ Eir directories ready"
 
-echo "=== [9/12] Setting up Palworld Game Server ==="
+echo "=== [9/13] Setting up Palworld Game Server ==="
 mkdir -p /opt/palworld/data /opt/palworld/backups
 chown -R 1000:1000 /opt/palworld
 echo "  ✓ Palworld directories ready"
 
-echo "=== [10/12] Setting up Hephaestus (Private Container Registry) ==="
+echo "=== [10/13] Setting up Hephaestus (Private Container Registry) ==="
 mkdir -p /mnt/storage/registry
 chown 1000:1000 /mnt/storage/registry
 echo "  ✓ Hephaestus directories ready"
 
-echo "=== [11/12] Git Global Optimizations ==="
+echo "=== [11/13] Git Global Optimizations ==="
 git config --global status.submoduleSummary false
 git config --global diff.ignoreSubmodules all
 git config --global submodule.recurse false
@@ -131,7 +131,7 @@ if [ -n "${SUDO_USER}" ] && [ "${SUDO_USER}" != "root" ]; then
 fi
 echo "  ✓ Git submodule optimizations applied"
 
-echo "=== [12/12] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
+echo "=== [12/13] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main}"
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/deploy.sh -o /usr/local/bin/deploy.sh
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/ensure_secret.sh -o /usr/local/bin/ensure_secret.sh
@@ -159,6 +159,34 @@ else
     chmod 0755 /usr/local/bin/prune-network-endpoints
 fi
 echo "  ✓ Deployment utilities, Charon restore CLI, swarm-exec, and prune-network-endpoints installed to /usr/local/bin"
+
+echo "=== [13/13] Setting up GitHub Runner Auto-Update Timer ==="
+if [ -f "${SCRIPT_DIR}/scripts/update-github-runner.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/update-github-runner.sh" /usr/local/bin/update-github-runner.sh
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/update-github-runner.sh" -o /usr/local/bin/update-github-runner.sh
+    chmod 0755 /usr/local/bin/update-github-runner.sh
+fi
+
+if [ -f "${SCRIPT_DIR}/systemd/update-github-runner.service" ]; then
+    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.service" /etc/systemd/system/update-github-runner.service
+else
+    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.service" -o /etc/systemd/system/update-github-runner.service
+    chmod 0644 /etc/systemd/system/update-github-runner.service
+fi
+
+if [ -f "${SCRIPT_DIR}/systemd/update-github-runner.timer" ]; then
+    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.timer" /etc/systemd/system/update-github-runner.timer
+else
+    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.timer" -o /etc/systemd/system/update-github-runner.timer
+    chmod 0644 /etc/systemd/system/update-github-runner.timer
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    systemctl enable --now update-github-runner.timer
+    echo "  ✓ GitHub runner auto-update timer enabled"
+fi
 
 # Final sweep: Ensure non-root ownership of vault git repository
 if [ -d "${VAULT_BASE}/.git" ]; then

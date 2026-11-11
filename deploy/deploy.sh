@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Usage: ./deploy.sh [--skip-build] <STACK_NAME> [COMPOSE_FILES...]
 # Example: ./deploy.sh cerberus_dev docker-compose.yml docker-compose.dev.yml
@@ -68,7 +68,7 @@ else
     # shellcheck disable=SC2086
     docker compose $BUILD_ARGS build --pull
     
-    if [ -n "$REGISTRY_PREFIX" ]; then
+    if [ -n "${REGISTRY_PREFIX:-}" ]; then
         echo "Pushing images to registry..."
         docker compose $BUILD_ARGS push
     fi
@@ -79,15 +79,20 @@ echo "Removing existing ${STACK_NAME} stack..."
 docker stack rm ${STACK_NAME} || true
 
 echo "Waiting for stack to be removed..."
-while docker service ls | grep -q "${STACK_NAME}_"; do
-    echo "Stack services still active, waiting..."
+WAIT_SERVICES=0
+MAX_WAIT=30
+while [ "$WAIT_SERVICES" -lt "$MAX_WAIT" ] && (timeout 5 docker service ls 2>/dev/null || true) | grep -q "${STACK_NAME}_"; do
+    echo "Stack services still active, waiting... ($((WAIT_SERVICES + 1))/${MAX_WAIT})"
     sleep 2
+    WAIT_SERVICES=$((WAIT_SERVICES + 1))
 done
 
 echo "Waiting for network to be removed..."
-while docker network ls | grep -q "${STACK_NAME}_internal"; do
-    echo "Stack network still active, waiting..."
+WAIT_NETWORK=0
+while [ "$WAIT_NETWORK" -lt "$MAX_WAIT" ] && (timeout 5 docker network ls 2>/dev/null || true) | grep -q "${STACK_NAME}_internal"; do
+    echo "Stack network still active, waiting... ($((WAIT_NETWORK + 1))/${MAX_WAIT})"
     sleep 2
+    WAIT_NETWORK=$((WAIT_NETWORK + 1))
 done
 
 # --- Deploy ---

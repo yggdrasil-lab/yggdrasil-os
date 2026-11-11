@@ -3,7 +3,7 @@
 # Autonomous Swarm startup, health convergence, and container cleanup orchestrator for Gaia host.
 # Handles post-boot power restoration recovery and post-restart Swarm convergence.
 
-set -e
+set -euo pipefail
 
 # Self-update if running from /usr/local/bin/gaia-swarm-startup.sh
 if [ "$0" = "/usr/local/bin/gaia-swarm-startup.sh" ]; then
@@ -49,7 +49,7 @@ echo "Swarm task history retention limit set to 1."
 
 echo "=== [3/5] Verifying Core Infrastructure (DNS, Proxy, Registry) ==="
 # Core services that provide image resolution and ingress routing:
-CORE_SERVICES=("poseidon_adguardhome" "olympus_traefik" "hephaestus_registry")
+CORE_SERVICES=("olympus_adguardhome" "olympus_traefik" "hephaestus_registry")
 for svc in "${CORE_SERVICES[@]}"; do
     if docker service inspect "$svc" >/dev/null 2>&1; then
         echo -n "Checking $svc... "

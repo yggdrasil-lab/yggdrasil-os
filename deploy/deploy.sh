@@ -136,20 +136,27 @@ if command -v git >/dev/null 2>&1; then
     if [ -n "$TASK_IDS" ]; then
         echo "Found candidate Kanban tasks for deployment: ${TASK_IDS}"
 
-        # Resolve Discord webhook credentials if not already exported
-        DISCORD_HOOK="${KANBAN_DISCORD_WEBHOOK_URL:-}"
+        # Resolve Discord bot credentials if not already exported
+        DISCORD_BOT="${DISCORD_BOT_TOKEN:-}"
+        DISCORD_CH="${DISCORD_CHANNEL_INFO_ID:-${KANBAN_DISCORD_CHANNEL_ID:-}}"
         DISCORD_UID="${DISCORD_USER_ID:-}"
-        if [ -z "$DISCORD_HOOK" ] && command -v docker >/dev/null 2>&1; then
-            DISCORD_HOOK=$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' odin_huginn-gateway 2>/dev/null | grep '^KANBAN_DISCORD_WEBHOOK_URL=' | cut -d'=' -f2- || true)
-        fi
-        if [ -z "$DISCORD_UID" ] && command -v docker >/dev/null 2>&1; then
-            DISCORD_UID=$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' odin_huginn-gateway 2>/dev/null | grep '^DISCORD_USER_ID=' | cut -d'=' -f2- || true)
+        if { [ -z "$DISCORD_BOT" ] || [ -z "$DISCORD_CH" ] || [ -z "$DISCORD_UID" ]; } && command -v docker >/dev/null 2>&1; then
+            ODIN_ENV=$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' odin_huginn-gateway 2>/dev/null || true)
+            if [ -n "$ODIN_ENV" ]; then
+                [ -z "$DISCORD_BOT" ] && DISCORD_BOT=$(echo "$ODIN_ENV" | grep '^DISCORD_BOT_TOKEN=' | cut -d'=' -f2- || true)
+                [ -z "$DISCORD_CH" ] && DISCORD_CH=$(echo "$ODIN_ENV" | grep '^DISCORD_CHANNEL_INFO_ID=' | cut -d'=' -f2- || true)
+                [ -z "$DISCORD_CH" ] && DISCORD_CH=$(echo "$ODIN_ENV" | grep '^KANBAN_DISCORD_CHANNEL_ID=' | cut -d'=' -f2- || true)
+                [ -z "$DISCORD_UID" ] && DISCORD_UID=$(echo "$ODIN_ENV" | grep '^DISCORD_USER_ID=' | cut -d'=' -f2- || true)
+            fi
         fi
 
         for TID in $TASK_IDS; do
             if command -v kanban-gateway >/dev/null 2>&1 && [ -f "/opt/odin/hermes/kanban.db" ]; then
                 echo "Resolving Kanban card ${TID} via local CLI..."
-                KANBAN_DISCORD_WEBHOOK_URL="$DISCORD_HOOK" DISCORD_USER_ID="$DISCORD_UID" kanban-gateway update \
+                DISCORD_BOT_TOKEN="$DISCORD_BOT" \
+                DISCORD_CHANNEL_INFO_ID="$DISCORD_CH" \
+                DISCORD_USER_ID="$DISCORD_UID" \
+                kanban-gateway update \
                     --task-id "$TID" \
                     --status done \
                     --message "PR merged to main. Swarm deployment active for ${STACK_NAME}." || true
@@ -157,14 +164,15 @@ if command -v git >/dev/null 2>&1; then
                 echo "Resolving Kanban card ${TID} via Swarm container..."
                 docker run --rm \
                     -v /opt/odin/hermes:/opt/data \
-                    -e KANBAN_DISCORD_WEBHOOK_URL="$DISCORD_HOOK" \
+                    -e DISCORD_BOT_TOKEN="$DISCORD_BOT" \
+                    -e DISCORD_CHANNEL_INFO_ID="$DISCORD_CH" \
                     -e DISCORD_USER_ID="$DISCORD_UID" \
                     --entrypoint python3 \
-                    registry.tienzo.net/hermes-agent:odin \
+                    ${REGISTRY_PREFIX:-registry.tienzo.net/}hermes-agent:odin \
                     /usr/local/bin/kanban_jev_gateway.py update \
                     --task-id "$TID" \
                     --status done \
-                    --message "PR merged to main. Swarm deployment active for ${STACK_NAME}." 2>/dev/null || true
+                    --message "PR merged to main. Swarm deployment active for ${STACK_NAME}." || true
             fi
         done
     fi

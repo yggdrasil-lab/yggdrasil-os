@@ -158,6 +158,7 @@ if command -v git >/dev/null 2>&1; then
         for TID in $TASK_IDS; do
             if command -v kanban-gateway >/dev/null 2>&1 && [ -f "/opt/odin/hermes/kanban.db" ]; then
                 echo "Resolving Kanban card ${TID} via local CLI..."
+                MUNINN_API_URL="${MUNINN_API_URL:-https://muninn.${DOMAIN_NAME:-tienzo.net}/v1/chat/completions}" \
                 DISCORD_BOT_TOKEN="$DISCORD_BOT" \
                 DISCORD_CHANNEL_INFO_ID="$DISCORD_CH" \
                 DISCORD_USER_ID="$DISCORD_UID" \
@@ -168,6 +169,7 @@ if command -v git >/dev/null 2>&1; then
             elif command -v docker >/dev/null 2>&1; then
                 echo "Resolving Kanban card ${TID} via Swarm container..."
                 docker run --rm \
+                    --network aether-net \
                     -v /opt/odin/hermes:/opt/data \
                     -e DISCORD_BOT_TOKEN="$DISCORD_BOT" \
                     -e DISCORD_CHANNEL_INFO_ID="$DISCORD_CH" \

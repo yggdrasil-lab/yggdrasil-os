@@ -193,6 +193,15 @@ if [ -d "${VAULT_BASE}/.git" ]; then
     chown -R "${TARGET_USER}:${TARGET_GROUP}" "${VAULT_BASE}/.git"
 fi
 
+# Ensure non-root ownership of Forge frontend build and Playwright artifact directories
+for dir_name in dist test-results playwright-report "node_modules/.vite"; do
+    for artifact_dir in "${VAULT_BASE}"/Forge/*/${dir_name} "${VAULT_BASE}"/Forge/*/web/${dir_name}; do
+        if [ -d "${artifact_dir}" ]; then
+            chown -R "${TARGET_USER}:${TARGET_GROUP}" "${artifact_dir}"
+        fi
+    done
+done
+
 echo ""
 echo "=============================================================================="
 echo "✓ Gaia Host Provisioning Complete! Ready for Swarm deployments."

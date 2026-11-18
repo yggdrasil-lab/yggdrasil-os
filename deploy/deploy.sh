@@ -80,11 +80,19 @@ docker stack rm ${STACK_NAME} || true
 
 echo "Waiting for stack to be removed..."
 WAIT_SERVICES=0
-MAX_WAIT=30
+MAX_WAIT=35
 while [ "$WAIT_SERVICES" -lt "$MAX_WAIT" ] && (timeout 5 docker service ls 2>/dev/null || true) | grep -q "${STACK_NAME}_"; do
     echo "Stack services still active, waiting... ($((WAIT_SERVICES + 1))/${MAX_WAIT})"
     sleep 2
     WAIT_SERVICES=$((WAIT_SERVICES + 1))
+done
+
+echo "Waiting for stack containers to stop..."
+WAIT_CONTAINERS=0
+while [ "$WAIT_CONTAINERS" -lt "$MAX_WAIT" ] && [ -n "$(timeout 5 docker ps -q --filter "label=com.docker.stack.namespace=${STACK_NAME}" 2>/dev/null || true)" ]; do
+    echo "Stack containers still stopping, waiting... ($((WAIT_CONTAINERS + 1))/${MAX_WAIT})"
+    sleep 2
+    WAIT_CONTAINERS=$((WAIT_CONTAINERS + 1))
 done
 
 echo "Waiting for network to be removed..."

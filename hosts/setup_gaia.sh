@@ -155,6 +155,15 @@ else
     chmod 0755 /usr/local/bin/swarm-exec
 fi
 
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/mnemosyne.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/scripts/mnemosyne.sh" /usr/local/bin/mnemosyne
+else
+    curl -fsSL "${RAW_BASE}/hosts/scripts/mnemosyne.sh" -o /usr/local/bin/mnemosyne
+    chmod 0755 /usr/local/bin/mnemosyne
+fi
+ln -sf /usr/local/bin/mnemosyne "${USER_LOCAL_BIN}/mnemosyne"
+chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}/mnemosyne" 2>/dev/null || true
+
 if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../network/prune_network_endpoints.py" ]; then
     install -m 0755 "${SCRIPT_DIR}/../network/prune_network_endpoints.py" /usr/local/bin/prune-network-endpoints
 else
@@ -168,7 +177,7 @@ else
     curl -fsSL "${RAW_BASE}/network/pin_registry_host.sh" -o /usr/local/bin/pin-registry-host
     chmod 0755 /usr/local/bin/pin-registry-host
 fi
-echo "  ✓ Deployment utilities, Charon restore CLI, swarm-exec, prune-network-endpoints, and pin-registry-host installed to /usr/local/bin"
+echo "  ✓ Deployment utilities, Charon restore CLI, swarm-exec, mnemosyne, prune-network-endpoints, and pin-registry-host installed to /usr/local/bin"
 
 echo "  -> Pinning local registry hostname in /etc/hosts (NODE_ROLE=manager)..."
 NODE_ROLE=manager /usr/local/bin/pin-registry-host

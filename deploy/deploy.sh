@@ -94,19 +94,19 @@ for svc in (data.get("services") or {}).values():
             echo "No built images to push."
         else
             MAX_PUSH_ATTEMPTS=3
-            for IMAGE_TAG in "${PUSH_IMAGES[@]}"; do
+            for PUSH_IMAGE_REF in "${PUSH_IMAGES[@]}"; do
                 ATTEMPT=1
                 while true; do
-                    echo "Pushing ${IMAGE_TAG} (attempt ${ATTEMPT}/${MAX_PUSH_ATTEMPTS})..."
-                    if docker push "$IMAGE_TAG"; then
+                    echo "Pushing ${PUSH_IMAGE_REF} (attempt ${ATTEMPT}/${MAX_PUSH_ATTEMPTS})..."
+                    if docker push "$PUSH_IMAGE_REF"; then
                         break
                     fi
                     if [ "$ATTEMPT" -ge "$MAX_PUSH_ATTEMPTS" ]; then
-                        echo "Error: Failed to push ${IMAGE_TAG} after ${MAX_PUSH_ATTEMPTS} attempts." >&2
+                        echo "Error: Failed to push ${PUSH_IMAGE_REF} after ${MAX_PUSH_ATTEMPTS} attempts." >&2
                         exit 1
                     fi
                     BACKOFF_SECONDS=$((ATTEMPT * 5))
-                    echo "Warning: Push failed for ${IMAGE_TAG}; retrying in ${BACKOFF_SECONDS}s..." >&2
+                    echo "Warning: Push failed for ${PUSH_IMAGE_REF}; retrying in ${BACKOFF_SECONDS}s..." >&2
                     sleep "$BACKOFF_SECONDS"
                     ATTEMPT=$((ATTEMPT + 1))
                 done

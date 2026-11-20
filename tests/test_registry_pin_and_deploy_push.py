@@ -333,6 +333,7 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         self.work_dir.mkdir()
         self.push_log = self.tmpdir / "push.log"
         self.sleep_log = self.tmpdir / "sleep.log"
+        self.stack_env_log = self.tmpdir / "stack_env.log"
         self.compose_json_file = self.tmpdir / "compose.json"
         self.fail_count_file = self.tmpdir / "fail_count.txt"
 
@@ -374,7 +375,12 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             "    fi\n"
             "  fi\n"
             "  exit 0\n"
-            "elif [ \"$cmd\" = \"stack\" ] || [ \"$cmd\" = \"service\" ] || [ \"$cmd\" = \"ps\" ] || [ \"$cmd\" = \"network\" ] || [ \"$cmd\" = \"secret\" ]; then\n"
+            "elif [ \"$cmd\" = \"stack\" ]; then\n"
+            "  if [ \"${2:-}\" = \"deploy\" ]; then\n"
+            f"    echo \"IMAGE_TAG=${{IMAGE_TAG:-}}\" >> {self.stack_env_log}\n"
+            "  fi\n"
+            "  exit 0\n"
+            "elif [ \"$cmd\" = \"service\" ] || [ \"$cmd\" = \"ps\" ] || [ \"$cmd\" = \"network\" ] || [ \"$cmd\" = \"secret\" ]; then\n"
             "  exit 0\n"
             "fi\n"
             "exit 0\n"
@@ -571,6 +577,27 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         for excluded in ["postgres", "ollama", "searxng", "muninn", "open-webui"]:
             for item in pushed:
                 self.assertNotIn(excluded, item)
+
+    def test_push_loop_preserves_exported_image_tag_for_stack_deploy(self) -> None:
+        mock_compose = {
+            "services": {
+                "ui-storybook": {
+                    "image": "registry.example.test/ui-storybook:storybook",
+                    "build": {"context": "."},
+                }
+            }
+        }
+        self.compose_json_file.write_text(json.dumps(mock_compose), encoding="utf-8")
+        self._install_mock_docker()
+
+        res = self._run_deploy(extra_env={"IMAGE_TAG": "storybook"}, stack_name="ui")
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        pushed = self.push_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(pushed, ["registry.example.test/ui-storybook:storybook"])
+        self.assertEqual(
+            self.stack_env_log.read_text(encoding="utf-8").strip(),
+            "IMAGE_TAG=storybook",
+        )
 
 
 if __name__ == "__main__":

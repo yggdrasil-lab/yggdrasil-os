@@ -69,8 +69,49 @@ else
     docker compose $BUILD_ARGS build --pull
     
     if [ -n "${REGISTRY_PREFIX:-}" ]; then
-        echo "Pushing images to registry..."
-        docker compose $BUILD_ARGS push
+        echo "Resolving built images to push..."
+        # shellcheck disable=SC2086
+        COMPOSE_JSON=$(docker compose $BUILD_ARGS config --format json)
+        PUSH_IMAGES_RAW=$(printf '%s' "$COMPOSE_JSON" | python3 -c '
+import json, sys
+
+data = json.load(sys.stdin)
+seen = set()
+for svc in (data.get("services") or {}).values():
+    if not isinstance(svc, dict) or svc.get("build") is None:
+        continue
+    image = str(svc.get("image") or "").strip()
+    if image and image not in seen:
+        seen.add(image)
+        print(image)
+')
+        PUSH_IMAGES=()
+        if [ -n "$PUSH_IMAGES_RAW" ]; then
+            mapfile -t PUSH_IMAGES <<< "$PUSH_IMAGES_RAW"
+        fi
+
+        if [ "${#PUSH_IMAGES[@]}" -eq 0 ]; then
+            echo "No built images to push."
+        else
+            MAX_PUSH_ATTEMPTS=3
+            for IMAGE_TAG in "${PUSH_IMAGES[@]}"; do
+                ATTEMPT=1
+                while true; do
+                    echo "Pushing ${IMAGE_TAG} (attempt ${ATTEMPT}/${MAX_PUSH_ATTEMPTS})..."
+                    if docker push "$IMAGE_TAG"; then
+                        break
+                    fi
+                    if [ "$ATTEMPT" -ge "$MAX_PUSH_ATTEMPTS" ]; then
+                        echo "Error: Failed to push ${IMAGE_TAG} after ${MAX_PUSH_ATTEMPTS} attempts." >&2
+                        exit 1
+                    fi
+                    BACKOFF_SECONDS=$((ATTEMPT * 5))
+                    echo "Warning: Push failed for ${IMAGE_TAG}; retrying in ${BACKOFF_SECONDS}s..." >&2
+                    sleep "$BACKOFF_SECONDS"
+                    ATTEMPT=$((ATTEMPT + 1))
+                done
+            done
+        fi
     fi
 fi
 

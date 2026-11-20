@@ -12,8 +12,11 @@ set -e
 # ==============================================================================
 
 echo "=== [1/13] Installing Host Prerequisites (gh, jq, base tooling) ==="
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-if [ -f "${SCRIPT_DIR}/install_prerequisites.sh" ]; then
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+fi
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/install_prerequisites.sh" ]; then
     bash "${SCRIPT_DIR}/install_prerequisites.sh"
 else
     curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/install_prerequisites.sh | bash
@@ -138,44 +141,54 @@ curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/dep
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh
 chmod +x /usr/local/bin/deploy.sh /usr/local/bin/ensure_secret.sh /usr/local/bin/prune_secrets.sh
 
-if [ -f "${SCRIPT_DIR}/scripts/charon-restore.sh" ]; then
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/charon-restore.sh" ]; then
     install -m 0755 "${SCRIPT_DIR}/scripts/charon-restore.sh" /usr/local/bin/charon-restore
 else
     curl -fsSL "${RAW_BASE}/hosts/scripts/charon-restore.sh" -o /usr/local/bin/charon-restore
     chmod 0755 /usr/local/bin/charon-restore
 fi
 
-if [ -f "${SCRIPT_DIR}/scripts/swarm-exec.sh" ]; then
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/swarm-exec.sh" ]; then
     install -m 0755 "${SCRIPT_DIR}/scripts/swarm-exec.sh" /usr/local/bin/swarm-exec
 else
     curl -fsSL "${RAW_BASE}/hosts/scripts/swarm-exec.sh" -o /usr/local/bin/swarm-exec
     chmod 0755 /usr/local/bin/swarm-exec
 fi
 
-if [ -f "${SCRIPT_DIR}/../network/prune_network_endpoints.py" ]; then
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../network/prune_network_endpoints.py" ]; then
     install -m 0755 "${SCRIPT_DIR}/../network/prune_network_endpoints.py" /usr/local/bin/prune-network-endpoints
 else
     curl -fsSL "${RAW_BASE}/network/prune_network_endpoints.py" -o /usr/local/bin/prune-network-endpoints
     chmod 0755 /usr/local/bin/prune-network-endpoints
 fi
-echo "  ✓ Deployment utilities, Charon restore CLI, swarm-exec, and prune-network-endpoints installed to /usr/local/bin"
+
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../network/pin_registry_host.sh" ]; then
+    install -m 0755 "${SCRIPT_DIR}/../network/pin_registry_host.sh" /usr/local/bin/pin-registry-host
+else
+    curl -fsSL "${RAW_BASE}/network/pin_registry_host.sh" -o /usr/local/bin/pin-registry-host
+    chmod 0755 /usr/local/bin/pin-registry-host
+fi
+echo "  ✓ Deployment utilities, Charon restore CLI, swarm-exec, prune-network-endpoints, and pin-registry-host installed to /usr/local/bin"
+
+echo "  -> Pinning local registry hostname in /etc/hosts (NODE_ROLE=manager)..."
+NODE_ROLE=manager /usr/local/bin/pin-registry-host
 
 echo "=== [13/13] Setting up GitHub Runner Auto-Update Timer ==="
-if [ -f "${SCRIPT_DIR}/scripts/update-github-runner.sh" ]; then
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/update-github-runner.sh" ]; then
     install -m 0755 "${SCRIPT_DIR}/scripts/update-github-runner.sh" /usr/local/bin/update-github-runner.sh
 else
     curl -fsSL "${RAW_BASE}/hosts/scripts/update-github-runner.sh" -o /usr/local/bin/update-github-runner.sh
     chmod 0755 /usr/local/bin/update-github-runner.sh
 fi
 
-if [ -f "${SCRIPT_DIR}/systemd/update-github-runner.service" ]; then
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/systemd/update-github-runner.service" ]; then
     install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.service" /etc/systemd/system/update-github-runner.service
 else
     curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.service" -o /etc/systemd/system/update-github-runner.service
     chmod 0644 /etc/systemd/system/update-github-runner.service
 fi
 
-if [ -f "${SCRIPT_DIR}/systemd/update-github-runner.timer" ]; then
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/systemd/update-github-runner.timer" ]; then
     install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.timer" /etc/systemd/system/update-github-runner.timer
 else
     curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.timer" -o /etc/systemd/system/update-github-runner.timer

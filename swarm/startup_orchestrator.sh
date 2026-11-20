@@ -135,16 +135,18 @@ if docker ps -a --format '{{.Names}}' | grep -q "^gaia-runner$"; then
     fi
 fi
 
-# Prune dead and exited task containers left behind by restart or power failure
-STOPPED_COUNT=$(docker ps -a --filter "status=exited" --filter "status=dead" -q | wc -l)
+# Prune created, exited, and dead task containers left behind by restart or power failure
+STOPPED_COUNT=$(docker ps -a --filter "status=created" --filter "status=exited" --filter "status=dead" -q | wc -l)
 if [ "$STOPPED_COUNT" -gt 0 ]; then
     echo "Pruning $STOPPED_COUNT stopped/dead container shells..."
     docker container prune -f >/dev/null 2>&1 || true
     DEAD_IDS=$(docker ps -a --filter "status=dead" -q)
     if [ -n "$DEAD_IDS" ]; then
-        docker rm -f $DEAD_IDS >/dev/null 2>&1 || true
+        docker rm -f -v $DEAD_IDS >/dev/null 2>&1 || true
     fi
-    echo "Dead container shells cleared."
+    # Omit -a/--all so named volumes are preserved (Docker 23+ prunes anonymous volumes only)
+    docker volume prune -f >/dev/null 2>&1 || true
+    echo "Dead/stopped container shells and anonymous volumes cleared."
 else
     echo "No dead/stopped containers found."
 fi
@@ -156,7 +158,7 @@ echo "======================================================"
 docker node ls
 echo ""
 RUNNING_COUNT=$(docker ps -q --filter "status=running" | wc -l)
-REMAINING_STOPPED=$(docker ps -a --filter "status=exited" --filter "status=dead" -q | wc -l)
+REMAINING_STOPPED=$(docker ps -a --filter "status=created" --filter "status=exited" --filter "status=dead" -q | wc -l)
 echo "Active Running Containers: $RUNNING_COUNT"
 echo "Stopped/Dead Containers:   $REMAINING_STOPPED"
 echo "======================================================"

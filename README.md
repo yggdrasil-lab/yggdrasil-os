@@ -80,7 +80,7 @@ prune-network-endpoints --all --force
 *(Or one-off via curl: `curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/network/prune_network_endpoints.py | python3 - --all --force`)*
 
 ### 4. Setup Monthly Storage Cleanup (Gaia Only)
-Run this on the **Manager Node** (Gaia) to install the autonomous systemd timer that prunes Docker build cache (>7d), removes unused images, and vacuums systemd journals on the 1st of each month at 3 AM:
+Run this on the **Manager Node** (Gaia) to install the autonomous systemd timer that prunes stopped/created Docker containers (>24h), removes anonymous unused volumes, prunes Docker build cache (>7d), removes unused images, and vacuums systemd journals on the 1st of each month at 3 AM:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/maintenance/install_cleanup_timer.sh | sudo bash

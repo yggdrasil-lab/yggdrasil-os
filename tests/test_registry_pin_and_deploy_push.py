@@ -16,6 +16,8 @@ DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "deploy.sh"
 SETUP_GAIA_SCRIPT = REPO_ROOT / "hosts" / "setup_gaia.sh"
 SETUP_MUSPELHEIM_SCRIPT = REPO_ROOT / "hosts" / "setup_muspelheim.sh"
 SWARM_EXEC_SCRIPT = REPO_ROOT / "hosts" / "scripts" / "swarm-exec.sh"
+RESTART_DOCKER_SCRIPT = REPO_ROOT / "docker" / "restart_docker.sh"
+MUSPELHEIM_RESTART_DOCKER_SCRIPT = REPO_ROOT / "hosts" / "scripts" / "muspelheim-restart-docker.sh"
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -43,6 +45,8 @@ class TestBashSyntax(unittest.TestCase):
             SETUP_MUSPELHEIM_SCRIPT,
             DEPLOY_SCRIPT,
             SWARM_EXEC_SCRIPT,
+            RESTART_DOCKER_SCRIPT,
+            MUSPELHEIM_RESTART_DOCKER_SCRIPT,
         ]
         for script in scripts:
             with self.subTest(script=script.name):
@@ -661,6 +665,8 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             "failed to update config odin_hermes_cfg_abc123",
             "failed to update secret db_password_v2",
             "changing port 80 is not supported",
+            "service mode change is not allowed",
+            "renaming services is not supported",
             "service spec contains immutable field change",
         ]
         for msg in messages:

@@ -171,7 +171,7 @@ else
         if [ -n "$DEPLOY_OUTPUT" ]; then
             printf '%s\n' "$DEPLOY_OUTPUT" >&2
         fi
-        if grep -qiE 'only updates to Labels are allowed|failed to update config|failed to update secret|changing .* is not supported|immutable' <<< "$DEPLOY_OUTPUT"; then
+        if grep -qiE 'only updates to Labels are allowed|failed to update config|failed to update secret|is not allowed|is not supported|immutable' <<< "$DEPLOY_OUTPUT"; then
             echo "Warning: In-place deploy rejected due to immutable Swarm config/spec change; falling back to stack recreate for ${STACK_NAME}..." >&2
             remove_stack
             echo "Retrying ${STACK_NAME} stack deploy after recreate..."

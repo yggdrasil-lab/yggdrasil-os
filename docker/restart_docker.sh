@@ -30,14 +30,35 @@ sync
 echo "Buffers synced."
 
 echo "=== [2/3] Restarting Docker Service ==="
-systemctl restart docker
+systemctl stop docker.socket docker.service 2>/dev/null || systemctl stop docker
+if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        case "$line" in
+            *" state DOWN "*|*" state DOWN")
+                iface="${line#*:}"
+                iface="${iface%%:*}"
+                iface="${iface%%@*}"
+                iface="${iface//[[:space:]]/}"
+                case "$iface" in
+                    vx-*)
+                        echo "Removing stale down VXLAN interface: ${iface}"
+                        ip link delete "$iface" 2>/dev/null || true
+                        ;;
+                esac
+                ;;
+        esac
+    done < <(ip -o link show type vxlan 2>/dev/null || true)
+fi
+systemctl start docker
 echo "Docker daemon restarted."
 
 echo "=== [3/3] Orchestrating Swarm Recovery & Health Convergence ==="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+SWARM_STARTUP_SCRIPT="${SWARM_STARTUP_SCRIPT:-/usr/local/bin/gaia-swarm-startup.sh}"
 
-if [ -x "/usr/local/bin/gaia-swarm-startup.sh" ]; then
-    /usr/local/bin/gaia-swarm-startup.sh
+if [ -x "$SWARM_STARTUP_SCRIPT" ]; then
+    "$SWARM_STARTUP_SCRIPT"
 elif [ -f "${SCRIPT_DIR}/../swarm/startup_orchestrator.sh" ]; then
     bash "${SCRIPT_DIR}/../swarm/startup_orchestrator.sh"
 else

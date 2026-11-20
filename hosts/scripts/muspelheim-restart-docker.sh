@@ -44,7 +44,27 @@ else
 fi
 
 echo "=== [3/5] Restarting Docker Service ==="
-systemctl restart docker
+systemctl stop docker.socket docker.service 2>/dev/null || systemctl stop docker
+if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        case "$line" in
+            *" state DOWN "*|*" state DOWN")
+                iface="${line#*:}"
+                iface="${iface%%:*}"
+                iface="${iface%%@*}"
+                iface="${iface//[[:space:]]/}"
+                case "$iface" in
+                    vx-*)
+                        echo "Removing stale down VXLAN interface: ${iface}"
+                        ip link delete "$iface" 2>/dev/null || true
+                        ;;
+                esac
+                ;;
+        esac
+    done < <(ip -o link show type vxlan 2>/dev/null || true)
+fi
+systemctl start docker
 echo "  ✓ Docker service restarted"
 
 echo "=== [4/5] Waiting for Docker Daemon Readiness ==="
@@ -63,8 +83,9 @@ echo "  ✓ Docker daemon is online and responsive"
 
 echo "=== [5/5] Restoring Apollo Supply & Pruning Exited Debris ==="
 # Invoke restore orchestrator to start Gluetun, wait for health, and start dependents
-if [ -x "/usr/local/bin/apollo-supply-restore.sh" ]; then
-    /usr/local/bin/apollo-supply-restore.sh
+APOLLO_RESTORE_SCRIPT="${APOLLO_RESTORE_SCRIPT:-/usr/local/bin/apollo-supply-restore.sh}"
+if [ -x "$APOLLO_RESTORE_SCRIPT" ]; then
+    "$APOLLO_RESTORE_SCRIPT"
 elif [ -f "$(dirname "${BASH_SOURCE[0]}")/apollo-supply-restore.sh" ]; then
     bash "$(dirname "${BASH_SOURCE[0]}")/apollo-supply-restore.sh"
 else

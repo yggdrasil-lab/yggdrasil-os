@@ -38,8 +38,10 @@ else
     CID=$(echo "$MATCHES" | awk '{print $1}')
 fi
 
-if [ -t 0 ]; then
+if [ -t 0 ] && [ -t 1 ]; then
     exec docker exec -it "$CID" "$@"
+elif [ ! -t 0 ]; then
+    exec docker exec -i "$CID" "$@"
 else
     exec docker exec "$CID" "$@"
 fi

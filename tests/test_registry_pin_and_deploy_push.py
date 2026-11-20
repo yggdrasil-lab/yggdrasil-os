@@ -15,6 +15,7 @@ PIN_SCRIPT = REPO_ROOT / "network" / "pin_registry_host.sh"
 DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "deploy.sh"
 SETUP_GAIA_SCRIPT = REPO_ROOT / "hosts" / "setup_gaia.sh"
 SETUP_MUSPELHEIM_SCRIPT = REPO_ROOT / "hosts" / "setup_muspelheim.sh"
+SWARM_EXEC_SCRIPT = REPO_ROOT / "hosts" / "scripts" / "swarm-exec.sh"
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -41,6 +42,7 @@ class TestBashSyntax(unittest.TestCase):
             SETUP_GAIA_SCRIPT,
             SETUP_MUSPELHEIM_SCRIPT,
             DEPLOY_SCRIPT,
+            SWARM_EXEC_SCRIPT,
         ]
         for script in scripts:
             with self.subTest(script=script.name):
@@ -334,8 +336,12 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         self.push_log = self.tmpdir / "push.log"
         self.sleep_log = self.tmpdir / "sleep.log"
         self.stack_env_log = self.tmpdir / "stack_env.log"
+        self.stack_cmd_log = self.tmpdir / "stack_cmd.log"
         self.compose_json_file = self.tmpdir / "compose.json"
         self.fail_count_file = self.tmpdir / "fail_count.txt"
+        self.stack_deploy_fail_count_file = self.tmpdir / "stack_deploy_fail_count.txt"
+        self.stack_deploy_fail_msg_file = self.tmpdir / "stack_deploy_fail_msg.txt"
+        self.stack_deploy_fail_rc_file = self.tmpdir / "stack_deploy_fail_rc.txt"
 
         _write_executable(
             self.mock_bin / "sleep",
@@ -376,8 +382,26 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             "  fi\n"
             "  exit 0\n"
             "elif [ \"$cmd\" = \"stack\" ]; then\n"
-            "  if [ \"${2:-}\" = \"deploy\" ]; then\n"
+            "  shift\n"
+            f"  echo \"$*\" >> {self.stack_cmd_log}\n"
+            "  subcmd=\"${1:-}\"\n"
+            "  if [ \"$subcmd\" = \"deploy\" ]; then\n"
             f"    echo \"IMAGE_TAG=${{IMAGE_TAG:-}}\" >> {self.stack_env_log}\n"
+            f"    if [ -f {self.stack_deploy_fail_count_file} ]; then\n"
+            f"      rem=$(cat {self.stack_deploy_fail_count_file})\n"
+            "      if [ \"$rem\" -gt 0 ]; then\n"
+            f"        echo $((rem - 1)) > {self.stack_deploy_fail_count_file}\n"
+            f"        if [ -f {self.stack_deploy_fail_msg_file} ]; then\n"
+            f"          cat {self.stack_deploy_fail_msg_file} >&2\n"
+            "        fi\n"
+            "        rc=1\n"
+            f"        if [ -f {self.stack_deploy_fail_rc_file} ]; then\n"
+            f"          rc=$(cat {self.stack_deploy_fail_rc_file})\n"
+            "        fi\n"
+            "        exit \"$rc\"\n"
+            "      fi\n"
+            "    fi\n"
+            "    echo \"Updating service teststack_app\"\n"
             "  fi\n"
             "  exit 0\n"
             "elif [ \"$cmd\" = \"service\" ] || [ \"$cmd\" = \"ps\" ] || [ \"$cmd\" = \"network\" ] || [ \"$cmd\" = \"secret\" ]; then\n"
@@ -392,6 +416,7 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         extra_env: dict[str, str] | None = None,
         compose_path: str = "docker-compose.yml",
         stack_name: str = "teststack",
+        extra_args: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = {
             "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
@@ -401,8 +426,9 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         }
         if extra_env:
             env.update(extra_env)
+        cmd = ["bash", str(DEPLOY_SCRIPT), *(extra_args or []), stack_name, compose_path]
         return subprocess.run(
-            ["bash", str(DEPLOY_SCRIPT), stack_name, compose_path],
+            cmd,
             cwd=str(self.work_dir),
             env=env,
             capture_output=True,
@@ -557,6 +583,7 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             "LLDAP_LDAP_USER_PASS_NAME": "s1",
             "HERMES_SSH_KEY_NAME": "s2",
             "WEBUI_SECRET_KEY_NAME": "s3",
+            "HERMES_CONFIG_SHA": "testsha",
         }
         res = self._run_deploy(
             extra_env=dummy_env,
@@ -598,6 +625,109 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             self.stack_env_log.read_text(encoding="utf-8").strip(),
             "IMAGE_TAG=storybook",
         )
+
+    def test_default_deploy_is_in_place_without_stack_rm(self) -> None:
+        self._install_mock_docker()
+
+        res = self._run_deploy(extra_args=["--skip-build"])
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(stack_cmds), 1)
+        self.assertFalse(any(cmd.startswith("rm ") for cmd in stack_cmds))
+        self.assertEqual(
+            stack_cmds[0],
+            "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
+        )
+        self.assertIn("Updating service teststack_app", res.stdout)
+
+    def test_recreate_flag_calls_stack_rm_before_deploy(self) -> None:
+        self._install_mock_docker()
+
+        res = self._run_deploy(extra_args=["--skip-build", "--recreate"])
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            stack_cmds,
+            [
+                "rm teststack",
+                "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
+            ],
+        )
+
+    def test_immutable_config_error_falls_back_to_recreate_and_succeeds(self) -> None:
+        self._install_mock_docker()
+        messages = [
+            "Error response from daemon: rpc error: code = InvalidArgument desc = only updates to Labels are allowed",
+            "failed to update config odin_hermes_cfg_abc123",
+            "failed to update secret db_password_v2",
+            "changing port 80 is not supported",
+            "service spec contains immutable field change",
+        ]
+        for msg in messages:
+            with self.subTest(msg=msg):
+                self.stack_cmd_log.unlink(missing_ok=True)
+                self.stack_deploy_fail_count_file.write_text("1", encoding="utf-8")
+                self.stack_deploy_fail_msg_file.write_text(f"{msg}\n", encoding="utf-8")
+
+                res = self._run_deploy(extra_args=["--skip-build"])
+                self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+                stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(
+                    stack_cmds,
+                    [
+                        "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
+                        "rm teststack",
+                        "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
+                    ],
+                )
+                self.assertIn(
+                    "Warning: In-place deploy rejected due to immutable Swarm config/spec change; falling back to stack recreate for teststack...",
+                    res.stderr,
+                )
+                self.assertIn(msg, res.stderr)
+
+    def test_immutable_fallback_retry_failure_exits_nonzero(self) -> None:
+        self._install_mock_docker()
+        self.stack_deploy_fail_count_file.write_text("2", encoding="utf-8")
+        self.stack_deploy_fail_msg_file.write_text(
+            "only updates to Labels are allowed\n",
+            encoding="utf-8",
+        )
+        self.stack_deploy_fail_rc_file.write_text("3", encoding="utf-8")
+
+        res = self._run_deploy(extra_args=["--skip-build"])
+        self.assertEqual(res.returncode, 3)
+        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            stack_cmds,
+            [
+                "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
+                "rm teststack",
+                "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
+            ],
+        )
+
+    def test_non_immutable_deploy_failure_exits_original_code_without_stack_rm(self) -> None:
+        self._install_mock_docker()
+        self.stack_deploy_fail_count_file.write_text("1", encoding="utf-8")
+        self.stack_deploy_fail_msg_file.write_text(
+            "network aether-net not found\n",
+            encoding="utf-8",
+        )
+        self.stack_deploy_fail_rc_file.write_text("2", encoding="utf-8")
+
+        res = self._run_deploy(extra_args=["--skip-build"])
+        self.assertEqual(res.returncode, 2)
+        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            stack_cmds,
+            [
+                "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
+            ],
+        )
+        self.assertFalse(any(cmd.startswith("rm ") for cmd in stack_cmds))
+        self.assertIn("network aether-net not found", res.stderr)
+        self.assertNotIn("falling back to stack recreate", res.stderr)
 
 
 if __name__ == "__main__":

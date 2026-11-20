@@ -1,10 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Usage: ./deploy.sh [--skip-build] <STACK_NAME> [COMPOSE_FILES...]
+# Usage: ./deploy.sh [--skip-build] [--recreate] <STACK_NAME> [COMPOSE_FILES...]
 # Example: ./deploy.sh cerberus_dev docker-compose.yml docker-compose.dev.yml
 
 SKIP_BUILD=false
+RECREATE=false
 STACK_NAME=""
 COMPOSE_FILES=()
 
@@ -23,6 +24,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_BUILD=true
             shift
             ;;
+        --recreate)
+            RECREATE=true
+            shift
+            ;;
         *)
             if [ -z "$STACK_NAME" ]; then
                 STACK_NAME="$1"
@@ -35,7 +40,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$STACK_NAME" ]; then
-    echo "Usage: $0 [--skip-build] <STACK_NAME> [COMPOSE_FILES...]"
+    echo "Usage: $0 [--skip-build] [--recreate] <STACK_NAME> [COMPOSE_FILES...]"
     exit 1
 fi
 
@@ -115,40 +120,70 @@ for svc in (data.get("services") or {}).values():
     fi
 fi
 
-# --- Cleanup ---
-echo "Removing existing ${STACK_NAME} stack..."
-docker stack rm ${STACK_NAME} || true
+# --- Stack Teardown Helper ---
+remove_stack() {
+    echo "Removing existing ${STACK_NAME} stack..."
+    docker stack rm "${STACK_NAME}" || true
 
-echo "Waiting for stack to be removed..."
-WAIT_SERVICES=0
-MAX_WAIT=35
-while [ "$WAIT_SERVICES" -lt "$MAX_WAIT" ] && (timeout 5 docker service ls 2>/dev/null || true) | grep -q "${STACK_NAME}_"; do
-    echo "Stack services still active, waiting... ($((WAIT_SERVICES + 1))/${MAX_WAIT})"
-    sleep 2
-    WAIT_SERVICES=$((WAIT_SERVICES + 1))
-done
+    echo "Waiting for stack to be removed..."
+    local WAIT_SERVICES=0
+    local MAX_WAIT=35
+    while [ "$WAIT_SERVICES" -lt "$MAX_WAIT" ] && (timeout 5 docker service ls 2>/dev/null || true) | grep -q "${STACK_NAME}_"; do
+        echo "Stack services still active, waiting... ($((WAIT_SERVICES + 1))/${MAX_WAIT})"
+        sleep 2
+        WAIT_SERVICES=$((WAIT_SERVICES + 1))
+    done
 
-echo "Waiting for stack containers to stop..."
-WAIT_CONTAINERS=0
-while [ "$WAIT_CONTAINERS" -lt "$MAX_WAIT" ] && [ -n "$(timeout 5 docker ps -q --filter "label=com.docker.stack.namespace=${STACK_NAME}" 2>/dev/null || true)" ]; do
-    echo "Stack containers still stopping, waiting... ($((WAIT_CONTAINERS + 1))/${MAX_WAIT})"
-    sleep 2
-    WAIT_CONTAINERS=$((WAIT_CONTAINERS + 1))
-done
+    echo "Waiting for stack containers to stop..."
+    local WAIT_CONTAINERS=0
+    while [ "$WAIT_CONTAINERS" -lt "$MAX_WAIT" ] && [ -n "$(timeout 5 docker ps -q --filter "label=com.docker.stack.namespace=${STACK_NAME}" 2>/dev/null || true)" ]; do
+        echo "Stack containers still stopping, waiting... ($((WAIT_CONTAINERS + 1))/${MAX_WAIT})"
+        sleep 2
+        WAIT_CONTAINERS=$((WAIT_CONTAINERS + 1))
+    done
 
-echo "Waiting for network to be removed..."
-WAIT_NETWORK=0
-while [ "$WAIT_NETWORK" -lt "$MAX_WAIT" ] && (timeout 5 docker network ls 2>/dev/null || true) | grep -q "${STACK_NAME}_internal"; do
-    echo "Stack network still active, waiting... ($((WAIT_NETWORK + 1))/${MAX_WAIT})"
-    sleep 2
-    WAIT_NETWORK=$((WAIT_NETWORK + 1))
-done
+    echo "Waiting for network to be removed..."
+    local WAIT_NETWORK=0
+    while [ "$WAIT_NETWORK" -lt "$MAX_WAIT" ] && (timeout 5 docker network ls 2>/dev/null || true) | grep -q "${STACK_NAME}_internal"; do
+        echo "Stack network still active, waiting... ($((WAIT_NETWORK + 1))/${MAX_WAIT})"
+        sleep 2
+        WAIT_NETWORK=$((WAIT_NETWORK + 1))
+    done
+}
 
 # --- Deploy ---
-echo "Deploying ${STACK_NAME} stack to Swarm..."
-# --prune: Remove services that are no longer referenced matched by the compose files
-# shellcheck disable=SC2086
-docker stack deploy --with-registry-auth --prune $DEPLOY_ARGS "${STACK_NAME}"
+# --prune: Remove services that are no longer referenced by the compose files
+# --resolve-image always: Resolve mutable tags to the latest registry digest during rolling updates
+if [ "$RECREATE" = true ]; then
+    remove_stack
+    echo "Deploying ${STACK_NAME} stack to Swarm..."
+    # shellcheck disable=SC2086
+    docker stack deploy --with-registry-auth --prune --resolve-image always $DEPLOY_ARGS "${STACK_NAME}"
+else
+    echo "Deploying ${STACK_NAME} stack to Swarm (in-place rolling update)..."
+    set +e
+    # shellcheck disable=SC2086
+    DEPLOY_OUTPUT=$(docker stack deploy --with-registry-auth --prune --resolve-image always $DEPLOY_ARGS "${STACK_NAME}" 2>&1)
+    DEPLOY_RC=$?
+    set -e
+
+    if [ "$DEPLOY_RC" -ne 0 ]; then
+        if [ -n "$DEPLOY_OUTPUT" ]; then
+            printf '%s\n' "$DEPLOY_OUTPUT" >&2
+        fi
+        if grep -qiE 'only updates to Labels are allowed|failed to update config|failed to update secret|changing .* is not supported|immutable' <<< "$DEPLOY_OUTPUT"; then
+            echo "Warning: In-place deploy rejected due to immutable Swarm config/spec change; falling back to stack recreate for ${STACK_NAME}..." >&2
+            remove_stack
+            echo "Retrying ${STACK_NAME} stack deploy after recreate..."
+            # shellcheck disable=SC2086
+            docker stack deploy --with-registry-auth --prune --resolve-image always $DEPLOY_ARGS "${STACK_NAME}"
+        else
+            exit "$DEPLOY_RC"
+        fi
+    elif [ -n "$DEPLOY_OUTPUT" ]; then
+        printf '%s\n' "$DEPLOY_OUTPUT"
+    fi
+fi
 
 echo "Deployment command submitted. Check status with: docker stack services ${STACK_NAME}"
 

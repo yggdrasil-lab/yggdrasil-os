@@ -9,10 +9,11 @@
 set -e
 
 if [ $# -lt 2 ]; then
-    echo "Usage: swarm-exec <service_pattern> <command...>"
+    echo "Usage: swarm-exec <service_pattern> [--] <command...>"
     echo ""
     echo "Examples:"
     echo "  swarm-exec dumper ls -la /backups"
+    echo "  swarm-exec iris-db -- psql -U iris"
     echo "  swarm-exec hermes python3 -c 'print(1)'"
     echo "  swarm-exec eir-api sh"
     exit 1
@@ -20,6 +21,15 @@ fi
 
 PATTERN="$1"
 shift
+
+if [ "${1:-}" = "--" ]; then
+    shift
+fi
+
+if [ $# -lt 1 ]; then
+    echo "Usage: swarm-exec <service_pattern> [--] <command...>" >&2
+    exit 1
+fi
 
 # Query running containers matching pattern
 MATCHES=$(docker ps --filter "name=${PATTERN}" --format "{{.ID}} {{.Names}}" 2>/dev/null)

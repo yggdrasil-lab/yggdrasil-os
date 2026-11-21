@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for hosts/scripts/swarm-exec.sh TTY and piped stdio detection."""
+"""Unit tests for hosts/scripts/swarm-exec.sh TTY detection and delimiter handling."""
 
 import errno
 import os
@@ -20,7 +20,7 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
-class TestSwarmExecTtyDetection(unittest.TestCase):
+class _SwarmExecTestBase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp(prefix="test-swarm-exec-"))
         self.mock_bin = self.tmpdir / "bin"
@@ -77,6 +77,52 @@ class TestSwarmExecTtyDetection(unittest.TestCase):
                 break
             chunks.append(data)
         return b"".join(chunks)
+
+    def _run_piped(
+        self,
+        args: list[str],
+        stdin_data: str | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[int, str, str]:
+        proc = subprocess.Popen(
+            ["bash", str(SWARM_EXEC_SCRIPT), *args],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._base_env(extra_env),
+            text=True,
+        )
+        stdout, stderr = proc.communicate(input=stdin_data, timeout=10)
+        return proc.returncode, stdout, stderr
+
+    def _run_pty_both(
+        self,
+        args: list[str],
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[int, bytes]:
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(SWARM_EXEC_SCRIPT), *args],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=self._base_env(extra_env),
+                close_fds=True,
+                start_new_session=True,
+            )
+        finally:
+            os.close(slave_fd)
+
+        try:
+            output = self._read_pty_to_eof(master_fd)
+            rc = proc.wait(timeout=10)
+        finally:
+            os.close(master_fd)
+        return rc, output
+
+
+class TestSwarmExecTtyDetection(_SwarmExecTestBase):
 
     def test_pty_stdin_and_pty_stdout_uses_it(self) -> None:
         master_fd, slave_fd = pty.openpty()
@@ -185,6 +231,65 @@ class TestSwarmExecTtyDetection(unittest.TestCase):
         args = self.exec_args_log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(args, ["exec", "-i", "abc123def456", "cat"])
         self.assertEqual(self.stdin_log.read_text(encoding="utf-8"), payload)
+
+
+class TestSwarmExecDelimiter(_SwarmExecTestBase):
+    def test_leading_delimiter_stripped_on_piped_path(self) -> None:
+        payload = "SELECT 1;\n"
+        rc, stdout, stderr = self._run_piped(
+            ["svc", "--", "psql", "-U", "iris"],
+            stdin_data=payload,
+            extra_env={"MOCK_CAPTURE_STDIN": "1"},
+        )
+
+        self.assertEqual(rc, 0, stderr)
+        args = self.exec_args_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(args, ["exec", "-i", "abc123def456", "psql", "-U", "iris"])
+        self.assertEqual(self.stdin_log.read_text(encoding="utf-8"), payload)
+        self.assertEqual(stdout, payload)
+
+    def test_leading_delimiter_stripped_on_tty_path(self) -> None:
+        rc, output = self._run_pty_both(
+            ["svc", "--", "psql", "-U", "iris"],
+            extra_env={"MOCK_STDOUT_TEXT": "tty-delim-ok"},
+        )
+
+        self.assertEqual(rc, 0, output.decode("utf-8", errors="replace"))
+        self.assertIn(b"tty-delim-ok", output)
+        args = self.exec_args_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(args, ["exec", "-it", "abc123def456", "psql", "-U", "iris"])
+
+    def test_inner_delimiter_preserved(self) -> None:
+        cases = [
+            ("with_leading_delimiter", ["svc", "--", "grep", "--", "-foo"]),
+            ("without_leading_delimiter", ["svc", "grep", "--", "-foo"]),
+        ]
+        for label, cli_args in cases:
+            with self.subTest(case=label):
+                self.exec_args_log.unlink(missing_ok=True)
+                rc, stdout, stderr = self._run_piped(
+                    cli_args,
+                    extra_env={"MOCK_STDOUT_TEXT": "grep-ok"},
+                )
+                self.assertEqual(rc, 0, stderr)
+                self.assertEqual(stdout, "grep-ok\n")
+                args = self.exec_args_log.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(args, ["exec", "-i", "abc123def456", "grep", "--", "-foo"])
+
+    def test_missing_command_after_delimiter_prints_usage_and_exits_one(self) -> None:
+        rc, stdout, stderr = self._run_piped(["svc", "--"])
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("Usage: swarm-exec <service_pattern> [--] <command...>", stderr)
+        self.assertFalse(self.exec_args_log.exists())
+
+    def test_missing_command_without_delimiter_prints_usage_and_exits_one(self) -> None:
+        rc, stdout, stderr = self._run_piped(["svc"])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Usage: swarm-exec <service_pattern> [--] <command...>", stdout + stderr)
+        self.assertFalse(self.exec_args_log.exists())
 
 
 if __name__ == "__main__":

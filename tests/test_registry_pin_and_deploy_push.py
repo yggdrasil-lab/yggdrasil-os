@@ -543,8 +543,21 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
 
     def test_live_odin_compose_extracts_hermes_once(self) -> None:
         odin_compose = _find_odin_compose()
-        if odin_compose is None or shutil.which("docker") is None:
-            self.skipTest("Odin docker-compose.yml or docker binary not present")
+        docker_bin = shutil.which("docker")
+        has_compose = (
+            docker_bin is not None
+            and subprocess.run(
+                [docker_bin, "compose", "version"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+        if odin_compose is None or not has_compose:
+            self.skipTest(
+                "Odin docker-compose.yml, docker binary, or docker-compose-plugin not present"
+            )
 
         self._install_mock_docker(real_docker_for_config=True)
         dummy_env = {

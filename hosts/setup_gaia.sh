@@ -52,7 +52,7 @@ ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_consolidate_daem
 ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_associative.py" "${USER_LOCAL_BIN}/mnemosyne-associative"
 ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_temporal_hygiene.py" "${USER_LOCAL_BIN}/mnemosyne-hygiene-audit"
 ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mimir_code_graph.py" "${USER_LOCAL_BIN}/mimir-code"
-ln -sf "/opt/odin/hermes/skills/devops/forge-pr-workflow/scripts/forseti_visual_gatekeeper.py" "${USER_LOCAL_BIN}/forseti-visual-gatekeeper"
+ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/forseti_visual_gatekeeper.py" "${USER_LOCAL_BIN}/forseti-visual-gatekeeper"
 ln -sf "/opt/odin/hermes/skills/devops/forge-pr-workflow/scripts/publish_pwa_visual_review.py" "${USER_LOCAL_BIN}/publish-pwa-visual-review"
 ln -sf "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py" "${USER_LOCAL_BIN}/kratos-workout"
 ln -sf "${VAULT_ROOT}/.agents/skills/romm-ops/scripts/romm_manage.py" "${USER_LOCAL_BIN}/romm-manage"

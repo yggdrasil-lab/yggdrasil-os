@@ -34,9 +34,9 @@ echo "=== [3/14] Setting up Odin (Hermes & AI Lab) ==="
 mkdir -p /opt/odin/hermes/home /opt/odin/mnemosyne /mnt/storage/backups/odin/hermes
 chown -R 1000:1000 /opt/odin /mnt/storage/backups/odin/hermes
 chmod -R 775 /opt/odin/mnemosyne
-# Preserve strict private-node socket/profile directory permissions (go-w) for Hermes gateway_runtime_discovery
-chmod 755 /opt/odin/hermes /opt/odin/hermes/profiles /opt/odin/hermes/profiles/* 2>/dev/null || true
-chmod 600 /opt/odin/hermes/gateway.sock /opt/odin/hermes/gateway.lock /opt/odin/hermes/profiles/*/gateway.lock 2>/dev/null || true
+# Preserve strict private-node directory and socket permissions (go-w) for Hermes gateway_runtime_discovery
+chmod 755 /opt/odin/hermes 2>/dev/null || true
+chmod 600 /opt/odin/hermes/gateway.sock /opt/odin/hermes/gateway.lock 2>/dev/null || true
 
 # Ensure agy CLI symlink and canonical turnkey CLI symlinks exist in user directory
 TARGET_USER=${SUDO_USER:-$(id -un)}

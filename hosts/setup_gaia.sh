@@ -41,7 +41,7 @@ chmod 600 /opt/odin/hermes/gateway.sock /opt/odin/hermes/gateway.lock /opt/odin/
 # Ensure agy CLI symlink and canonical turnkey CLI symlinks exist in user directory
 TARGET_USER=${SUDO_USER:-$(id -un)}
 TARGET_GROUP="$(id -gn "${TARGET_USER}" 2>/dev/null || echo "${TARGET_USER}")"
-USER_LOCAL_BIN="/home/${TARGET_USER}/.local/bin"
+USER_LOCAL_BIN="${USER_LOCAL_BIN:-/home/${TARGET_USER}/.local/bin}"
 mkdir -p "${USER_LOCAL_BIN}"
 if [ -f "${USER_LOCAL_BIN}/agy" ]; then
     ln -sf "${USER_LOCAL_BIN}/agy" /usr/local/bin/agy
@@ -147,28 +147,36 @@ curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/dep
 curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh
 chmod +x /usr/local/bin/deploy.sh /usr/local/bin/ensure_secret.sh /usr/local/bin/prune_secrets.sh
 
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/charon-restore.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/charon-restore.sh" /usr/local/bin/charon-restore
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/charon-restore.sh" -o /usr/local/bin/charon-restore
-    chmod 0755 /usr/local/bin/charon-restore
-fi
+install_central_cli() {
+    local script_name="${1:?script_name required}"
+    local bin_name="${2:?bin_name required}"
+    local central_bin_dir="${CENTRAL_BIN_DIR:-/usr/local/bin}"
+    local target_bin="${central_bin_dir}/${bin_name}"
 
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/swarm-exec.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/swarm-exec.sh" /usr/local/bin/swarm-exec
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/swarm-exec.sh" -o /usr/local/bin/swarm-exec
-    chmod 0755 /usr/local/bin/swarm-exec
-fi
+    mkdir -p "${central_bin_dir}"
+    if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/${script_name}" ]; then
+        install -m 0755 "${SCRIPT_DIR}/scripts/${script_name}" "${target_bin}"
+    else
+        curl -fsSL "${RAW_BASE}/hosts/scripts/${script_name}" -o "${target_bin}"
+        chmod 0755 "${target_bin}"
+    fi
 
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/mnemosyne.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/mnemosyne.sh" /usr/local/bin/mnemosyne
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/mnemosyne.sh" -o /usr/local/bin/mnemosyne
-    chmod 0755 /usr/local/bin/mnemosyne
-fi
-ln -sf /usr/local/bin/mnemosyne "${USER_LOCAL_BIN}/mnemosyne"
-chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}/mnemosyne" 2>/dev/null || true
+    if [ ! -d "${USER_LOCAL_BIN}" ]; then
+        mkdir -p "${USER_LOCAL_BIN}"
+        chown "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}" 2>/dev/null || true
+    fi
+    ln -sf "${target_bin}" "${USER_LOCAL_BIN}/${bin_name}"
+    chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}/${bin_name}" 2>/dev/null || true
+}
+
+CENTRAL_CLI_SPECS=(
+    "charon-restore.sh:charon-restore"
+    "swarm-exec.sh:swarm-exec"
+    "mnemosyne.sh:mnemosyne"
+)
+for cli_spec in "${CENTRAL_CLI_SPECS[@]}"; do
+    install_central_cli "${cli_spec%%:*}" "${cli_spec#*:}"
+done
 
 if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../network/prune_network_endpoints.py" ]; then
     install -m 0755 "${SCRIPT_DIR}/../network/prune_network_endpoints.py" /usr/local/bin/prune-network-endpoints

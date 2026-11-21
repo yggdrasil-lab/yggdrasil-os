@@ -104,9 +104,10 @@ class TestMnemosyneWrapper(unittest.TestCase):
                 self.assertEqual(res.returncode, 0, res.stderr)
 
         setup_text = SETUP_GAIA_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("scripts/mnemosyne.sh", setup_text)
-        self.assertIn("/usr/local/bin/mnemosyne", setup_text)
-        self.assertIn('ln -sf /usr/local/bin/mnemosyne "${USER_LOCAL_BIN}/mnemosyne"', setup_text)
+        self.assertIn('"mnemosyne.sh:mnemosyne"', setup_text)
+        self.assertIn("install_central_cli", setup_text)
+        self.assertIn("${CENTRAL_BIN_DIR:-/usr/local/bin}", setup_text)
+        self.assertIn('ln -sf "${target_bin}" "${USER_LOCAL_BIN}/${bin_name}"', setup_text)
 
     def test_running_container_immediately_found_forwards_exact_args(self) -> None:
         self._set_ps_responses([{"rc": 0, "stdout": "cid-running-123\ncid-older-456\n"}])

@@ -582,8 +582,6 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             "TYPESAFE_DEFAULT_MODEL": "m",
             "DISCORD_BOT_TOKEN": "t",
             "DISCORD_USER_ID": "1",
-            "KANBAN_DISCORD_CHANNEL_ID": "1",
-            "KANBAN_DEFAULT_ASSIGNEE": "w",
             "DISCORD_CHANNEL_INFO_ID": "1",
             "DISCORD_CHANNEL_HEALTH_ID": "1",
             "DISCORD_CHANNEL_WEALTH_ID": "1",
@@ -747,6 +745,92 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         self.assertFalse(any(cmd.startswith("rm ") for cmd in stack_cmds))
         self.assertIn("network aether-net not found", res.stderr)
         self.assertNotIn("falling back to stack recreate", res.stderr)
+
+
+class TestKanbanDecommissionGuards(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-kanban-decommission-"))
+        self.mock_bin = self.tmpdir / "bin"
+        self.mock_bin.mkdir()
+        self.work_dir = self.tmpdir / "stack"
+        self.work_dir.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _install_fail_on_kanban_mocks(self) -> None:
+        _write_executable(
+            self.mock_bin / "docker",
+            "#!/usr/bin/env bash\n"
+            'cmd="${1:-}"\n'
+            'if [ "$cmd" = "stack" ] || [ "$cmd" = "secret" ]; then exit 0; fi\n'
+            'echo "Unexpected docker invocation: $*" >&2\nexit 99\n',
+        )
+        _write_executable(
+            self.mock_bin / "git",
+            "#!/usr/bin/env bash\necho 'chore: test [kb-1234abcd] (#42)'\n",
+        )
+        for cmd in ("gh", "kanban-gateway"):
+            _write_executable(
+                self.mock_bin / cmd,
+                "#!/usr/bin/env bash\n"
+                f'echo "Unexpected {cmd} invocation: $*" >&2\nexit 99\n',
+            )
+
+    def test_deploy_omits_kanban_auto_sync_for_kb_refs(self) -> None:
+        deploy_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        for retired in (
+            "Kanban Auto-Sync",
+            "kanban-gateway",
+            "kanban_jev_gateway.py",
+            "KANBAN_DISCORD_CHANNEL_ID",
+            "/opt/odin/hermes/kanban.db",
+        ):
+            self.assertNotIn(retired, deploy_text, f"{retired!r} must not remain in deploy.sh")
+
+        self._install_fail_on_kanban_mocks()
+        env = {"PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin", "HOME": str(self.tmpdir)}
+        res = subprocess.run(
+            ["bash", str(DEPLOY_SCRIPT), "--skip-build", "teststack"],
+            cwd=str(self.work_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+    def test_setup_gaia_preserves_hermes_perms_without_profiles(self) -> None:
+        setup_text = SETUP_GAIA_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("profiles", setup_text, "profiles must not remain in setup_gaia.sh")
+        self.assertIn("chmod 755 /opt/odin/hermes 2>/dev/null || true", setup_text)
+        self.assertIn(
+            "chmod 600 /opt/odin/hermes/gateway.sock /opt/odin/hermes/gateway.lock 2>/dev/null || true",
+            setup_text,
+        )
+
+        hermes_dir = self.tmpdir / "odin" / "hermes"
+        hermes_dir.mkdir(parents=True)
+        sock_file = hermes_dir / "gateway.sock"
+        lock_file = hermes_dir / "gateway.lock"
+        sock_file.write_text("", encoding="utf-8")
+        lock_file.write_text("", encoding="utf-8")
+        hermes_dir.chmod(0o775)
+        sock_file.chmod(0o644)
+        lock_file.chmod(0o644)
+
+        chmod_lines = [
+            line.replace("/opt/odin/hermes", str(hermes_dir))
+            for line in setup_text.splitlines()
+            if line.startswith("chmod 755 /opt/odin/hermes")
+            or line.startswith("chmod 600 /opt/odin/hermes/")
+        ]
+        self.assertEqual(len(chmod_lines), 2)
+        res = subprocess.run(["bash", "-e", "-c", "\n".join(chmod_lines)], capture_output=True, text=True, check=False)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(stat.S_IMODE(hermes_dir.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(sock_file.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(lock_file.stat().st_mode), 0o600)
 
 
 if __name__ == "__main__":

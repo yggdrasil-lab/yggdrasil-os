@@ -30,6 +30,8 @@ COURT_OF_ODIN_SYMLINKS = (
     (f"{FORGE_PR_SCRIPTS_REL}/publish_pwa_visual_review.py", "publish-pwa-visual-review"),
     (f"{FORGE_PR_SCRIPTS_REL}/create_forge_pr.py", "create-forge-pr"),
     (f"{FORGE_PR_SCRIPTS_REL}/verify_forge_pr.py", "verify-forge-pr"),
+    (f"{FORGE_PR_SCRIPTS_REL}/forge_ship.py", "forge-ship"),
+    (f"{FORGE_PR_SCRIPTS_REL}/forge_merge_verify.py", "forge-merge-verify"),
     (f"{ROMM_OPS_SCRIPTS_REL}/romm_manage.py", "romm-manage"),
 )
 UNCHANGED_SKILL_SYMLINKS = (
@@ -367,11 +369,18 @@ class TestSetupGaiaForgePrSymlinks(unittest.TestCase):
             self.vault_root
             / ".agents/plugins/court-of-odin/domain-skills/forge-pr-workflow/scripts/verify_forge_pr.py"
         )
+        (self.user_local_bin / "forge-merge-verify").symlink_to(
+            f"{LEGACY_FORGE_PR_PATH}/scripts/forge_merge_verify.py"
+        )
         (self.user_local_bin / "romm-manage").symlink_to(
             self.vault_root / ".agents/skills/romm-ops/scripts/romm_manage.py"
         )
         _write_executable(
             self.user_local_bin / "create-forge-pr",
+            "#!/usr/bin/env bash\necho stale-standalone\n",
+        )
+        _write_executable(
+            self.user_local_bin / "forge-ship",
             "#!/usr/bin/env bash\necho stale-standalone\n",
         )
 

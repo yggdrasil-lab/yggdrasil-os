@@ -17,16 +17,23 @@ CENTRAL_CLIS = (
     ("swarm-exec.sh", "swarm-exec"),
     ("mnemosyne.sh", "mnemosyne"),
 )
-FORGE_PR_SCRIPTS_REL = ".agents/plugins/court-of-odin/domain-skills/forge-pr-workflow/scripts"
+COURT_OF_ODIN_SKILLS_REL = ".agents/plugins/court-of-odin/skills"
+FORGE_PR_SCRIPTS_REL = f"{COURT_OF_ODIN_SKILLS_REL}/forge-pr-workflow/scripts"
+ROMM_OPS_SCRIPTS_REL = f"{COURT_OF_ODIN_SKILLS_REL}/romm-ops/scripts"
 LEGACY_FORGE_PR_PATH = "/opt/odin/hermes/skills/devops/forge-pr-workflow"
-FORGE_PR_SYMLINKS = (
-    ("publish_pwa_visual_review.py", "publish-pwa-visual-review"),
-    ("create_forge_pr.py", "create-forge-pr"),
-    ("verify_forge_pr.py", "verify-forge-pr"),
+LEGACY_SKILL_PATHS = (
+    LEGACY_FORGE_PR_PATH,
+    ".agents/skills/",
+    "domain-skills/",
+)
+COURT_OF_ODIN_SYMLINKS = (
+    (f"{FORGE_PR_SCRIPTS_REL}/publish_pwa_visual_review.py", "publish-pwa-visual-review"),
+    (f"{FORGE_PR_SCRIPTS_REL}/create_forge_pr.py", "create-forge-pr"),
+    (f"{FORGE_PR_SCRIPTS_REL}/verify_forge_pr.py", "verify-forge-pr"),
+    (f"{ROMM_OPS_SCRIPTS_REL}/romm_manage.py", "romm-manage"),
 )
 UNCHANGED_SKILL_SYMLINKS = (
     ("/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py", "kratos-workout"),
-    ("${VAULT_ROOT}/.agents/skills/romm-ops/scripts/romm_manage.py", "romm-manage"),
 )
 
 
@@ -291,7 +298,7 @@ class TestSetupGaiaSymlinks(unittest.TestCase):
 
 
 class TestSetupGaiaForgePrSymlinks(unittest.TestCase):
-    """Regression tests for Forge PR workflow turnkey symlinks in hosts/setup_gaia.sh."""
+    """Regression tests for Court of Odin turnkey skill symlinks in hosts/setup_gaia.sh."""
 
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp(prefix="test-setup-gaia-forge-pr-"))
@@ -322,14 +329,17 @@ class TestSetupGaiaForgePrSymlinks(unittest.TestCase):
         )
         return _run_bash_with_tools(runner_script, self.mock_tools, self.tmpdir)
 
-    def test_setup_gaia_declares_domain_skill_forge_pr_symlinks_only(self) -> None:
+    def test_setup_gaia_declares_court_of_odin_skill_symlinks_only(self) -> None:
         text = SETUP_GAIA_SCRIPT.read_text(encoding="utf-8")
-        self.assertNotIn(LEGACY_FORGE_PR_PATH, text)
-        for script_name, bin_name in FORGE_PR_SYMLINKS:
-            expected = (
-                f'ln -sf "${{VAULT_ROOT}}/{FORGE_PR_SCRIPTS_REL}/{script_name}" '
-                f'"${{USER_LOCAL_BIN}}/{bin_name}"'
-            )
+        for legacy_path in LEGACY_SKILL_PATHS:
+            with self.subTest(legacy_path=legacy_path):
+                self.assertNotIn(
+                    legacy_path,
+                    text,
+                    f"Legacy skill path {legacy_path!r} still present in hosts/setup_gaia.sh",
+                )
+        for script_rel, bin_name in COURT_OF_ODIN_SYMLINKS:
+            expected = f'ln -sf "${{VAULT_ROOT}}/{script_rel}" "${{USER_LOCAL_BIN}}/{bin_name}"'
             with self.subTest(cli=bin_name):
                 self.assertIn(expected, text)
         for target_expr, bin_name in UNCHANGED_SKILL_SYMLINKS:
@@ -343,18 +353,23 @@ class TestSetupGaiaForgePrSymlinks(unittest.TestCase):
         ).strip()
         self.assertEqual(default_vault, "/opt/atlas/vault")
 
-    def test_turnkey_block_links_forge_pr_clis_and_replaces_stale_targets(self) -> None:
-        scripts_dir = self.vault_root / FORGE_PR_SCRIPTS_REL
-        for script_name, bin_name in FORGE_PR_SYMLINKS:
+    def test_turnkey_block_links_court_of_odin_clis_and_replaces_stale_targets(self) -> None:
+        for script_rel, bin_name in COURT_OF_ODIN_SYMLINKS:
             _write_executable(
-                scripts_dir / script_name,
-                f"#!/usr/bin/env bash\necho forge-pr:{bin_name}\n",
+                self.vault_root / script_rel,
+                f"#!/usr/bin/env bash\necho court-of-odin:{bin_name}\n",
             )
-        romm_script = self.vault_root / ".agents" / "skills" / "romm-ops" / "scripts" / "romm_manage.py"
-        _write_executable(romm_script, "#!/usr/bin/env bash\necho romm-manage\n")
 
-        stale_link = self.user_local_bin / "publish-pwa-visual-review"
-        stale_link.symlink_to(f"{LEGACY_FORGE_PR_PATH}/scripts/publish_pwa_visual_review.py")
+        (self.user_local_bin / "publish-pwa-visual-review").symlink_to(
+            f"{LEGACY_FORGE_PR_PATH}/scripts/publish_pwa_visual_review.py"
+        )
+        (self.user_local_bin / "verify-forge-pr").symlink_to(
+            self.vault_root
+            / ".agents/plugins/court-of-odin/domain-skills/forge-pr-workflow/scripts/verify_forge_pr.py"
+        )
+        (self.user_local_bin / "romm-manage").symlink_to(
+            self.vault_root / ".agents/skills/romm-ops/scripts/romm_manage.py"
+        )
         _write_executable(
             self.user_local_bin / "create-forge-pr",
             "#!/usr/bin/env bash\necho stale-standalone\n",
@@ -363,19 +378,18 @@ class TestSetupGaiaForgePrSymlinks(unittest.TestCase):
         res = self._run_turnkey_block()
         self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
 
-        for script_name, bin_name in FORGE_PR_SYMLINKS:
+        for script_rel, bin_name in COURT_OF_ODIN_SYMLINKS:
             with self.subTest(cli=bin_name):
                 link_path = self.user_local_bin / bin_name
                 self.assertTrue(link_path.is_symlink(), f"{link_path} must be a symlink")
-                self.assertEqual(Path(os.readlink(link_path)), scripts_dir / script_name)
+                self.assertEqual(Path(os.readlink(link_path)), self.vault_root / script_rel)
                 out = subprocess.check_output([str(link_path)], text=True).strip()
-                self.assertEqual(out, f"forge-pr:{bin_name}")
+                self.assertEqual(out, f"court-of-odin:{bin_name}")
 
         self.assertEqual(
             os.readlink(self.user_local_bin / "kratos-workout"),
             "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py",
         )
-        self.assertEqual(Path(os.readlink(self.user_local_bin / "romm-manage")), romm_script)
         chown_entries = self.chown_log.read_text(encoding="utf-8")
         self.assertIn(f"-h {self.target_user}:{self.target_group}", chown_entries)
 

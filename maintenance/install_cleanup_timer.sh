@@ -14,7 +14,7 @@ SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 fi
-RAW_BASE="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main"
+RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main}"
 BIN_PATH="${GAIA_CLEANUP_BIN_PATH:-/usr/local/bin/gaia-cleanup.sh}"
 SYSTEMD_DIR="${GAIA_SYSTEMD_DIR:-/etc/systemd/system}"
 

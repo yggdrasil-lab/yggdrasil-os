@@ -2,6 +2,7 @@
 """Unit tests for orphaned container and anonymous volume cleanup scripts."""
 
 import configparser
+import re
 import shutil
 import stat
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLEANUP_SCRIPT = REPO_ROOT / "maintenance" / "cleanup_storage.sh"
 INSTALL_TIMER_SCRIPT = REPO_ROOT / "maintenance" / "install_cleanup_timer.sh"
+SETUP_GAIA_SCRIPT = REPO_ROOT / "hosts" / "setup_gaia.sh"
 SYSTEMD_DIR = REPO_ROOT / "maintenance" / "systemd"
 MONTHLY_CLEANUP_SERVICE = SYSTEMD_DIR / "gaia-cleanup.service"
 MONTHLY_CLEANUP_TIMER = SYSTEMD_DIR / "gaia-cleanup.timer"
@@ -32,9 +34,27 @@ def _parse_ini(path: Path) -> configparser.ConfigParser:
     return parser
 
 
+def _extract_setup_gaia_cleanup_step() -> str:
+    text = SETUP_GAIA_SCRIPT.read_text(encoding="utf-8")
+    match = re.search(
+        r'(echo "=== \[15/15\] Setting up Gaia Storage Cleanup & Daily Container Prune Timers ==="\n'
+        r'if \[ -n "\$\{SCRIPT_DIR\}" \].*?\nfi)',
+        text,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError("Could not locate [15/15] cleanup timer block in hosts/setup_gaia.sh")
+    return match.group(1)
+
+
 class TestBashSyntax(unittest.TestCase):
     def test_bash_syntax_valid(self) -> None:
-        for script in (CLEANUP_SCRIPT, INSTALL_TIMER_SCRIPT, STARTUP_SCRIPT):
+        for script in (
+            CLEANUP_SCRIPT,
+            INSTALL_TIMER_SCRIPT,
+            SETUP_GAIA_SCRIPT,
+            STARTUP_SCRIPT,
+        ):
             with self.subTest(script=script.name):
                 res = subprocess.run(
                     ["bash", "-n", str(script)],
@@ -254,6 +274,9 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
             "fi\n"
             "exit 0\n",
         )
+        self._install_mock_curl()
+
+    def _install_mock_curl(self) -> None:
         _write_executable(
             self.mock_bin / "curl",
             "#!/usr/bin/env bash\n"
@@ -268,7 +291,11 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
             "  esac\n"
             "done\n"
             f"printf '%s\\n' \"$url\" >> {self.curl_log}\n"
-            "printf '# downloaded from %s\\n' \"$url\" > \"$out\"\n",
+            "if [ -n \"$out\" ]; then\n"
+            "  printf '# downloaded from %s\\n' \"$url\" > \"$out\"\n"
+            "elif [ -n \"${MOCK_INSTALL_SCRIPT_PATH:-}\" ] && [[ \"$url\" == */maintenance/install_cleanup_timer.sh ]]; then\n"
+            "  cat \"$MOCK_INSTALL_SCRIPT_PATH\"\n"
+            "fi\n",
         )
 
     def tearDown(self) -> None:
@@ -410,6 +437,113 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
                 "systemctl enable --now gaia-container-prune.timer",
                 "systemctl list-timers --all",
             ],
+        )
+
+    def test_install_cleanup_timer_honors_raw_base_override(self) -> None:
+        override = "https://mirror.example.test/yggdrasil-os/feat"
+        res = self._run_installer(
+            stdin_mode=True,
+            extra_env={"MOCK_EMPTY_TIMERS": "1", "RAW_BASE": override},
+        )
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        self.assertEqual(
+            self.curl_log.read_text(encoding="utf-8").splitlines(),
+            [
+                f"{override}/maintenance/cleanup_storage.sh",
+                f"{override}/maintenance/systemd/gaia-cleanup.service",
+                f"{override}/maintenance/systemd/gaia-cleanup.timer",
+                f"{override}/maintenance/systemd/gaia-container-prune.service",
+                f"{override}/maintenance/systemd/gaia-container-prune.timer",
+            ],
+        )
+
+    def test_setup_gaia_step_numbering_is_consistent(self) -> None:
+        setup_text = SETUP_GAIA_SCRIPT.read_text(encoding="utf-8")
+        headers = re.findall(r"=== \[(\d+)/(\d+)\]", setup_text)
+        self.assertEqual(
+            headers,
+            [(str(i), "15") for i in range(1, 16)],
+            f"Unexpected step numbering in setup_gaia.sh: {headers}",
+        )
+
+    def test_setup_gaia_cleanup_step_runs_local_mode(self) -> None:
+        step_block = _extract_setup_gaia_cleanup_step()
+        override = "https://mirror.example.test/yggdrasil-os/feat"
+        local_runner = (
+            "set -euo pipefail\n"
+            f'SCRIPT_DIR="{REPO_ROOT / "hosts"}"\n'
+            f'RAW_BASE="{override}"\n'
+            f"{step_block}\n"
+        )
+        res = self._run_bash_snippet(local_runner)
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        self.assertFalse(self.curl_log.exists())
+        self.assertEqual(
+            self.calls_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "systemctl daemon-reload",
+                "systemctl enable --now gaia-cleanup.timer",
+                "systemctl enable --now gaia-container-prune.timer",
+                "systemctl list-timers --all",
+            ],
+        )
+
+    def test_setup_gaia_cleanup_step_runs_curl_mode(self) -> None:
+        step_block = _extract_setup_gaia_cleanup_step()
+        override = "https://mirror.example.test/yggdrasil-os/feat"
+        curl_runner = (
+            "set -euo pipefail\n"
+            'SCRIPT_DIR=""\n'
+            f'RAW_BASE="{override}"\n'
+            f"{step_block}\n"
+        )
+        res = self._run_bash_snippet(
+            curl_runner,
+            extra_env={"MOCK_INSTALL_SCRIPT_PATH": str(INSTALL_TIMER_SCRIPT)},
+        )
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        self.assertEqual(
+            self.curl_log.read_text(encoding="utf-8").splitlines(),
+            [
+                f"{override}/maintenance/install_cleanup_timer.sh",
+                f"{override}/maintenance/cleanup_storage.sh",
+                f"{override}/maintenance/systemd/gaia-cleanup.service",
+                f"{override}/maintenance/systemd/gaia-cleanup.timer",
+                f"{override}/maintenance/systemd/gaia-container-prune.service",
+                f"{override}/maintenance/systemd/gaia-container-prune.timer",
+            ],
+        )
+        self.assertEqual(
+            self.calls_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "systemctl daemon-reload",
+                "systemctl enable --now gaia-cleanup.timer",
+                "systemctl enable --now gaia-container-prune.timer",
+                "systemctl list-timers --all",
+            ],
+        )
+
+    def _run_bash_snippet(
+        self,
+        snippet: str,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = {
+            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
+            "HOME": str(self.tmpdir),
+            "GAIA_CLEANUP_BIN_PATH": str(self.dest_bin),
+            "GAIA_SYSTEMD_DIR": str(self.dest_systemd),
+        }
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(
+            ["bash"],
+            input=snippet,
+            cwd=str(self.tmpdir),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
 

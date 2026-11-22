@@ -291,6 +291,10 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
             "  esac\n"
             "done\n"
             f"printf '%s\\n' \"$url\" >> {self.curl_log}\n"
+            "if [ \"${MOCK_CURL_FAIL:-0}\" = \"1\" ]; then\n"
+            "  echo \"curl: (22) The requested URL returned error: 404\" >&2\n"
+            "  exit 22\n"
+            "fi\n"
             "if [ -n \"$out\" ]; then\n"
             "  printf '# downloaded from %s\\n' \"$url\" > \"$out\"\n"
             "elif [ -n \"${MOCK_INSTALL_SCRIPT_PATH:-}\" ] && [[ \"$url\" == */maintenance/install_cleanup_timer.sh ]]; then\n"
@@ -470,7 +474,7 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
         step_block = _extract_setup_gaia_cleanup_step()
         override = "https://mirror.example.test/yggdrasil-os/feat"
         local_runner = (
-            "set -euo pipefail\n"
+            "set -e\n"
             f'SCRIPT_DIR="{REPO_ROOT / "hosts"}"\n'
             f'RAW_BASE="{override}"\n'
             f"{step_block}\n"
@@ -492,7 +496,7 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
         step_block = _extract_setup_gaia_cleanup_step()
         override = "https://mirror.example.test/yggdrasil-os/feat"
         curl_runner = (
-            "set -euo pipefail\n"
+            "set -e\n"
             'SCRIPT_DIR=""\n'
             f'RAW_BASE="{override}"\n'
             f"{step_block}\n"
@@ -522,6 +526,28 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
                 "systemctl list-timers --all",
             ],
         )
+
+    def test_setup_gaia_cleanup_step_fails_loudly_when_curl_fails(self) -> None:
+        step_block = _extract_setup_gaia_cleanup_step()
+        override = "https://mirror.example.test/yggdrasil-os/feat"
+        curl_runner = (
+            "set -e\n"
+            'SCRIPT_DIR=""\n'
+            f'RAW_BASE="{override}"\n'
+            f"{step_block}\n"
+        )
+        res = self._run_bash_snippet(
+            curl_runner,
+            extra_env={"MOCK_CURL_FAIL": "1"},
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("returned error: 404", res.stderr)
+        self.assertEqual(
+            self.curl_log.read_text(encoding="utf-8").splitlines(),
+            [f"{override}/maintenance/install_cleanup_timer.sh"],
+        )
+        self.assertFalse(self.calls_log.exists())
+        self.assertFalse(self.dest_bin.exists())
 
     def _run_bash_snippet(
         self,

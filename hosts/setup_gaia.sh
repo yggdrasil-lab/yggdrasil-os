@@ -230,7 +230,7 @@ echo "=== [15/15] Setting up Gaia Storage Cleanup & Daily Container Prune Timers
 if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../maintenance/install_cleanup_timer.sh" ]; then
     RAW_BASE="${RAW_BASE}" bash "${SCRIPT_DIR}/../maintenance/install_cleanup_timer.sh"
 else
-    curl -fsSL "${RAW_BASE}/maintenance/install_cleanup_timer.sh" | RAW_BASE="${RAW_BASE}" bash
+    (set -o pipefail; curl -fsSL "${RAW_BASE}/maintenance/install_cleanup_timer.sh" | RAW_BASE="${RAW_BASE}" bash)
 fi
 
 # Final sweep: Ensure non-root ownership of vault git repository

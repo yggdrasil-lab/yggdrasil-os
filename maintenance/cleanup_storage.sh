@@ -1,9 +1,10 @@
 #!/bin/bash
 # maintenance/cleanup_storage.sh
-# Automated monthly disk storage cleanup for Gaia host.
-# Prunes stopped/created Docker containers (>24h), anonymous unused volumes, stale build cache (>168h), unused images, and vacuums systemd journal.
+# Automated disk storage cleanup for Gaia host.
+# Supports full monthly cleanup (default) and daily --containers-only pruning
+# of stopped/created containers (>24h) and anonymous unused volumes.
 
-set -e
+set -euo pipefail
 
 # Self-update if installed at /usr/local/bin/gaia-cleanup.sh and online
 if [ "$0" = "/usr/local/bin/gaia-cleanup.sh" ]; then
@@ -20,6 +21,20 @@ if [ "$0" = "/usr/local/bin/gaia-cleanup.sh" ]; then
     fi
 fi
 
+CONTAINERS_ONLY=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --containers-only)
+            CONTAINERS_ONLY=true
+            shift
+            ;;
+        *)
+            echo "Error: Unknown argument '$1'. Usage: $0 [--containers-only]" >&2
+            exit 1
+            ;;
+    esac
+done
+
 echo "=== Gaia Storage Cleanup Started: $(date) ==="
 echo "Disk space before cleanup:"
 df -h /
@@ -30,6 +45,13 @@ docker container prune -f --filter "until=24h"
 echo "--- Pruning anonymous unused Docker volumes ---"
 # Omit -a/--all so named volumes are preserved (Docker 23+ prunes anonymous volumes only)
 docker volume prune -f
+
+if [ "$CONTAINERS_ONLY" = true ]; then
+    echo "Disk space after cleanup:"
+    df -h /
+    echo "=== Gaia Containers-Only Cleanup Finished: $(date) ==="
+    exit 0
+fi
 
 echo "--- Pruning Docker build cache (older than 168h / 7 days) ---"
 docker builder prune -a -f --filter "until=168h"

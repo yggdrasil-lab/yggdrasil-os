@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for orphaned container and anonymous volume cleanup scripts."""
 
+import configparser
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +11,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLEANUP_SCRIPT = REPO_ROOT / "maintenance" / "cleanup_storage.sh"
+INSTALL_TIMER_SCRIPT = REPO_ROOT / "maintenance" / "install_cleanup_timer.sh"
+SYSTEMD_DIR = REPO_ROOT / "maintenance" / "systemd"
+MONTHLY_CLEANUP_SERVICE = SYSTEMD_DIR / "gaia-cleanup.service"
+MONTHLY_CLEANUP_TIMER = SYSTEMD_DIR / "gaia-cleanup.timer"
+DAILY_PRUNE_SERVICE = SYSTEMD_DIR / "gaia-container-prune.service"
+DAILY_PRUNE_TIMER = SYSTEMD_DIR / "gaia-container-prune.timer"
 STARTUP_SCRIPT = REPO_ROOT / "swarm" / "startup_orchestrator.sh"
 
 
@@ -17,9 +25,16 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
+def _parse_ini(path: Path) -> configparser.ConfigParser:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(path, encoding="utf-8")
+    return parser
+
+
 class TestBashSyntax(unittest.TestCase):
     def test_bash_syntax_valid(self) -> None:
-        for script in (CLEANUP_SCRIPT, STARTUP_SCRIPT):
+        for script in (CLEANUP_SCRIPT, INSTALL_TIMER_SCRIPT, STARTUP_SCRIPT):
             with self.subTest(script=script.name):
                 res = subprocess.run(
                     ["bash", "-n", str(script)],
@@ -48,6 +63,9 @@ class TestCleanupStorage(unittest.TestCase):
             self.mock_bin / "docker",
             "#!/usr/bin/env bash\n"
             f"printf '%s\\n' \"$*\" >> {self.docker_log}\n"
+            "if [ \"${1:-}\" = \"ps\" ] && [ -n \"${MOCK_REGISTRY_CID:-}\" ]; then\n"
+            "  printf '%s\\n' \"$MOCK_REGISTRY_CID\"\n"
+            "fi\n"
             "exit 0\n",
         )
         _write_executable(
@@ -126,6 +144,272 @@ class TestCleanupStorage(unittest.TestCase):
         self.assertEqual(
             self.net_prune_log.read_text(encoding="utf-8").splitlines(),
             ["--all --force"],
+        )
+
+    def _run_cleanup(
+        self,
+        args: list[str] | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = {
+            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
+            "HOME": str(self.tmpdir),
+        }
+        if extra_env:
+            env.update(extra_env)
+        cmd = ["bash", str(CLEANUP_SCRIPT)]
+        if args:
+            cmd.extend(args)
+        return subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_containers_only_prunes_containers_and_anonymous_volumes_only(self) -> None:
+        res = self._run_cleanup(
+            args=["--containers-only"],
+            extra_env={"MOCK_REGISTRY_CID": "reg-123"},
+        )
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+        docker_calls = self.docker_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            docker_calls,
+            [
+                "container prune -f --filter until=24h",
+                "volume prune -f",
+            ],
+        )
+
+        volume_calls = [c for c in docker_calls if c.startswith("volume prune")]
+        for call in volume_calls:
+            tokens = call.split()
+            self.assertNotIn("-a", tokens)
+            self.assertNotIn("--all", tokens)
+
+        self.assertFalse(self.journal_log.exists())
+        self.assertFalse(self.net_prune_log.exists())
+        self.assertEqual(
+            self.df_log.read_text(encoding="utf-8").splitlines(),
+            ["-h /", "-h /"],
+        )
+        self.assertIn("Gaia Containers-Only Cleanup Finished", res.stdout)
+
+    def test_unknown_flag_fails_loudly_without_running_cleanup(self) -> None:
+        for bad_args in (["--bogus"], ["--containers-only", "--bogus"], ["unexpected"]):
+            with self.subTest(args=bad_args):
+                for log_file in (
+                    self.docker_log,
+                    self.df_log,
+                    self.journal_log,
+                    self.net_prune_log,
+                ):
+                    log_file.unlink(missing_ok=True)
+
+                res = self._run_cleanup(args=bad_args)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("Unknown argument", res.stderr)
+                self.assertIn(bad_args[-1], res.stderr)
+                self.assertFalse(self.docker_log.exists())
+                self.assertFalse(self.df_log.exists())
+                self.assertFalse(self.journal_log.exists())
+                self.assertFalse(self.net_prune_log.exists())
+
+
+class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-install-cleanup-timer-"))
+        self.mock_bin = self.tmpdir / "bin"
+        self.mock_bin.mkdir()
+        self.calls_log = self.tmpdir / "calls.log"
+        self.curl_log = self.tmpdir / "curl.log"
+        self.dest_bin = self.tmpdir / "usr_local_bin" / "gaia-cleanup.sh"
+        self.dest_systemd = self.tmpdir / "etc_systemd_system"
+        self._install_mock_tools()
+
+    def _install_mock_tools(self) -> None:
+        _write_executable(
+            self.mock_bin / "id",
+            "#!/usr/bin/env bash\n"
+            "if [ \"${1:-}\" = \"-u\" ]; then\n"
+            "  printf '%s\\n' \"${MOCK_UID:-0}\"\n"
+            "  exit 0\n"
+            "fi\n"
+            "exec /usr/bin/id \"$@\"\n",
+        )
+        _write_executable(
+            self.mock_bin / "systemctl",
+            "#!/usr/bin/env bash\n"
+            f"printf 'systemctl %s\\n' \"$*\" >> {self.calls_log}\n"
+            "if [ \"${1:-}\" = \"list-timers\" ]; then\n"
+            "  if [ \"${MOCK_EMPTY_TIMERS:-0}\" != \"1\" ]; then\n"
+            "    echo 'NEXT LEFT LAST PASSED UNIT ACTIVATES'\n"
+            "    echo 'Mon 03:00 - - - gaia-cleanup.timer gaia-cleanup.service'\n"
+            "    echo 'Tue 04:30 - - - gaia-container-prune.timer gaia-container-prune.service'\n"
+            "  fi\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+        )
+        _write_executable(
+            self.mock_bin / "curl",
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "url=\"\"\n"
+            "out=\"\"\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  case \"$1\" in\n"
+            "    -o) out=\"$2\"; shift 2 ;;\n"
+            "    -*) shift ;;\n"
+            "    *) url=\"$1\"; shift ;;\n"
+            "  esac\n"
+            "done\n"
+            f"printf '%s\\n' \"$url\" >> {self.curl_log}\n"
+            "printf '# downloaded from %s\\n' \"$url\" > \"$out\"\n",
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _run_installer(
+        self,
+        *,
+        stdin_mode: bool = False,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = {
+            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
+            "HOME": str(self.tmpdir),
+            "GAIA_CLEANUP_BIN_PATH": str(self.dest_bin),
+            "GAIA_SYSTEMD_DIR": str(self.dest_systemd),
+        }
+        if extra_env:
+            env.update(extra_env)
+        if stdin_mode:
+            return subprocess.run(
+                ["bash"],
+                input=INSTALL_TIMER_SCRIPT.read_text(encoding="utf-8"),
+                cwd=str(self.tmpdir),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        return subprocess.run(
+            ["bash", str(INSTALL_TIMER_SCRIPT)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_daily_container_prune_service_and_timer_units(self) -> None:
+        self.assertTrue(DAILY_PRUNE_SERVICE.is_file(), f"Missing {DAILY_PRUNE_SERVICE}")
+        self.assertTrue(DAILY_PRUNE_TIMER.is_file(), f"Missing {DAILY_PRUNE_TIMER}")
+
+        daily_svc = _parse_ini(DAILY_PRUNE_SERVICE)
+        self.assertEqual(daily_svc.get("Unit", "After"), "docker.service")
+        self.assertEqual(daily_svc.get("Unit", "Wants"), "docker.service")
+        self.assertEqual(daily_svc.get("Service", "Type"), "oneshot")
+        self.assertEqual(
+            daily_svc.get("Service", "ExecStart"),
+            "/usr/local/bin/gaia-cleanup.sh --containers-only",
+        )
+
+        daily_tmr = _parse_ini(DAILY_PRUNE_TIMER)
+        self.assertEqual(daily_tmr.get("Timer", "OnCalendar"), "*-*-* 04:30:00")
+        self.assertEqual(daily_tmr.get("Timer", "RandomizedDelaySec"), "15m")
+        self.assertEqual(daily_tmr.get("Timer", "Persistent"), "true")
+        self.assertEqual(daily_tmr.get("Timer", "Unit"), "gaia-container-prune.service")
+        self.assertEqual(daily_tmr.get("Install", "WantedBy"), "timers.target")
+
+        monthly_svc = _parse_ini(MONTHLY_CLEANUP_SERVICE)
+        self.assertEqual(monthly_svc.get("Service", "ExecStart"), "/usr/local/bin/gaia-cleanup.sh")
+        monthly_tmr = _parse_ini(MONTHLY_CLEANUP_TIMER)
+        self.assertEqual(monthly_tmr.get("Timer", "OnCalendar"), "*-*-01 03:00:00")
+        self.assertEqual(monthly_tmr.get("Timer", "Persistent"), "true")
+
+    def test_install_cleanup_timer_non_root_fails_loudly(self) -> None:
+        res = self._run_installer(extra_env={"MOCK_UID": "1000"})
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("must be run as root", res.stderr)
+        self.assertFalse(self.calls_log.exists())
+        self.assertFalse(self.dest_bin.exists())
+
+    def test_install_cleanup_timer_local_idempotent_installs_both_timers(self) -> None:
+        expected_calls = [
+            "systemctl daemon-reload",
+            "systemctl enable --now gaia-cleanup.timer",
+            "systemctl enable --now gaia-container-prune.timer",
+            "systemctl list-timers --all",
+        ]
+        for run_idx in range(2):
+            with self.subTest(run=run_idx):
+                self.calls_log.unlink(missing_ok=True)
+                res = self._run_installer()
+                self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+                self.assertEqual(
+                    self.calls_log.read_text(encoding="utf-8").splitlines(),
+                    expected_calls,
+                )
+
+        self.assertEqual(stat.S_IMODE(self.dest_bin.stat().st_mode), 0o755)
+        self.assertEqual(
+            self.dest_bin.read_text(encoding="utf-8"),
+            CLEANUP_SCRIPT.read_text(encoding="utf-8"),
+        )
+        for unit in (
+            "gaia-cleanup.service",
+            "gaia-cleanup.timer",
+            "gaia-container-prune.service",
+            "gaia-container-prune.timer",
+        ):
+            installed = self.dest_systemd / unit
+            self.assertTrue(installed.is_file(), f"Missing installed {unit}")
+            self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o644)
+            self.assertEqual(
+                installed.read_text(encoding="utf-8"),
+                (SYSTEMD_DIR / unit).read_text(encoding="utf-8"),
+            )
+        self.assertFalse(self.curl_log.exists())
+
+    def test_install_cleanup_timer_zero_clone_stdin_curl_fallback(self) -> None:
+        res = self._run_installer(
+            stdin_mode=True,
+            extra_env={"MOCK_EMPTY_TIMERS": "1"},
+        )
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+        raw_base = "https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/maintenance"
+        self.assertEqual(
+            self.curl_log.read_text(encoding="utf-8").splitlines(),
+            [
+                f"{raw_base}/cleanup_storage.sh",
+                f"{raw_base}/systemd/gaia-cleanup.service",
+                f"{raw_base}/systemd/gaia-cleanup.timer",
+                f"{raw_base}/systemd/gaia-container-prune.service",
+                f"{raw_base}/systemd/gaia-container-prune.timer",
+            ],
+        )
+        self.assertEqual(stat.S_IMODE(self.dest_bin.stat().st_mode), 0o755)
+        for unit in (
+            "gaia-cleanup.service",
+            "gaia-cleanup.timer",
+            "gaia-container-prune.service",
+            "gaia-container-prune.timer",
+        ):
+            self.assertEqual(stat.S_IMODE((self.dest_systemd / unit).stat().st_mode), 0o644)
+        self.assertEqual(
+            self.calls_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "systemctl daemon-reload",
+                "systemctl enable --now gaia-cleanup.timer",
+                "systemctl enable --now gaia-container-prune.timer",
+                "systemctl list-timers --all",
+            ],
         )
 
 

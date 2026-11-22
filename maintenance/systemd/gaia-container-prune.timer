@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Gaia Host Container and Anonymous Volume Prune Daily
+Documentation=https://github.com/yggdrasil-lab/yggdrasil-os
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=gaia-container-prune.service
+
+[Install]
+WantedBy=timers.target

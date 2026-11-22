@@ -56,6 +56,8 @@ ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/forseti_visual_gatekeeper.
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/publish_pwa_visual_review.py" "${USER_LOCAL_BIN}/publish-pwa-visual-review"
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/create_forge_pr.py" "${USER_LOCAL_BIN}/create-forge-pr"
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/verify_forge_pr.py" "${USER_LOCAL_BIN}/verify-forge-pr"
+ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forge_ship.py" "${USER_LOCAL_BIN}/forge-ship"
+ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forge_merge_verify.py" "${USER_LOCAL_BIN}/forge-merge-verify"
 ln -sf "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py" "${USER_LOCAL_BIN}/kratos-workout"
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/romm-ops/scripts/romm_manage.py" "${USER_LOCAL_BIN}/romm-manage"
 chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}"/* 2>/dev/null || true

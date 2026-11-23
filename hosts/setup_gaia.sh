@@ -60,6 +60,7 @@ ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scr
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forge_merge_verify.py" "${USER_LOCAL_BIN}/forge-merge-verify"
 ln -sf "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py" "${USER_LOCAL_BIN}/kratos-workout"
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/romm-ops/scripts/romm_manage.py" "${USER_LOCAL_BIN}/romm-manage"
+ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/gaia-host-ops/scripts/safe_docker_run.py" "${USER_LOCAL_BIN}/safe-docker-run"
 chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}"/* 2>/dev/null || true
 echo "  ✓ Odin directories and turnkey CLI symlinks ready"
 

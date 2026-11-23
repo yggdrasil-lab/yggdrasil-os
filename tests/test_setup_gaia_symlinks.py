@@ -33,6 +33,7 @@ COURT_OF_ODIN_SYMLINKS = (
     (f"{FORGE_PR_SCRIPTS_REL}/forge_ship.py", "forge-ship"),
     (f"{FORGE_PR_SCRIPTS_REL}/forge_merge_verify.py", "forge-merge-verify"),
     (f"{ROMM_OPS_SCRIPTS_REL}/romm_manage.py", "romm-manage"),
+    (f"{COURT_OF_ODIN_SKILLS_REL}/gaia-host-ops/scripts/safe_docker_run.py", "safe-docker-run"),
 )
 UNCHANGED_SKILL_SYMLINKS = (
     ("/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py", "kratos-workout"),

@@ -253,6 +253,9 @@ for dir_name in dist test-results playwright-report "node_modules/.vite"; do
     done
 done
 
+# Remove stale root-owned Vite cache directories from prior container runs
+rm -rf "${VAULT_BASE}"/Forge/*/node_modules/.vite_root_owned "${VAULT_BASE}"/Forge/*/web/node_modules/.vite_root_owned 2>/dev/null || true
+
 echo ""
 echo "=============================================================================="
 echo "✓ Gaia Host Provisioning Complete! Ready for Swarm deployments."

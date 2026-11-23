@@ -34,6 +34,9 @@ COURT_OF_ODIN_SYMLINKS = (
     (f"{FORGE_PR_SCRIPTS_REL}/forge_merge_verify.py", "forge-merge-verify"),
     (f"{ROMM_OPS_SCRIPTS_REL}/romm_manage.py", "romm-manage"),
     (f"{COURT_OF_ODIN_SKILLS_REL}/gaia-host-ops/scripts/safe_docker_run.py", "safe-docker-run"),
+    (f"{COURT_OF_ODIN_SKILLS_REL}/fleet/scripts/huginn_recon.py", "huginn-recon"),
+    (f"{FORGE_PR_SCRIPTS_REL}/rollout_convergence_gate.py", "rollout-convergence-gate"),
+    (f"{COURT_OF_ODIN_SKILLS_REL}/code-review/scripts/forseti_diff_bundle.py", "forseti-diff-bundle"),
 )
 UNCHANGED_SKILL_SYMLINKS = (
     ("/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py", "kratos-workout"),

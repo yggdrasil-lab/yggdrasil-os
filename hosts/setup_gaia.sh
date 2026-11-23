@@ -61,6 +61,9 @@ ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scr
 ln -sf "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py" "${USER_LOCAL_BIN}/kratos-workout"
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/romm-ops/scripts/romm_manage.py" "${USER_LOCAL_BIN}/romm-manage"
 ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/gaia-host-ops/scripts/safe_docker_run.py" "${USER_LOCAL_BIN}/safe-docker-run"
+ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/fleet/scripts/huginn_recon.py" "${USER_LOCAL_BIN}/huginn-recon"
+ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/rollout_convergence_gate.py" "${USER_LOCAL_BIN}/rollout-convergence-gate"
+ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/code-review/scripts/forseti_diff_bundle.py" "${USER_LOCAL_BIN}/forseti-diff-bundle"
 chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}"/* 2>/dev/null || true
 echo "  ✓ Odin directories and turnkey CLI symlinks ready"
 

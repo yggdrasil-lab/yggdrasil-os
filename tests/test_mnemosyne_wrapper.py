@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Unit tests for the hardened host mnemosyne CLI wrapper."""
 
+import contextlib
 import json
 import os
 import pty
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -22,16 +24,115 @@ class TestMnemosyneWrapper(unittest.TestCase):
         self.fake_docker = self.tmpdir / "fake-docker"
         self.state_file = self.tmpdir / "state.json"
         self.log_file = self.tmpdir / "calls.jsonl"
+        self.db_path = self.tmpdir / "mnemosyne.db"
         self._write_fake_docker()
+        self._init_synthetic_db()
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _init_synthetic_db(self) -> None:
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE working_memory (
+                    id TEXT PRIMARY KEY,
+                    content TEXT,
+                    source TEXT,
+                    timestamp TEXT,
+                    session_id TEXT,
+                    importance REAL,
+                    metadata_json TEXT,
+                    veracity TEXT,
+                    created_at TEXT,
+                    author_id TEXT,
+                    author_type TEXT,
+                    scope TEXT,
+                    channel_id TEXT,
+                    valid_until TEXT,
+                    superseded_by TEXT,
+                    recall_count INTEGER,
+                    last_recalled TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE episodic_memory (
+                    id TEXT PRIMARY KEY,
+                    content TEXT,
+                    source TEXT,
+                    timestamp TEXT,
+                    session_id TEXT,
+                    importance REAL,
+                    metadata_json TEXT,
+                    veracity TEXT,
+                    created_at TEXT,
+                    author_id TEXT,
+                    author_type TEXT,
+                    scope TEXT,
+                    channel_id TEXT,
+                    valid_until TEXT,
+                    superseded_by TEXT,
+                    recall_count INTEGER,
+                    last_recalled TEXT,
+                    event_date TEXT,
+                    event_date_precision TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE memories (
+                    id TEXT PRIMARY KEY,
+                    content TEXT,
+                    source TEXT,
+                    timestamp TEXT,
+                    session_id TEXT,
+                    importance REAL,
+                    metadata_json TEXT,
+                    created_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO working_memory (
+                    id, content, source, timestamp, session_id, importance,
+                    metadata_json, veracity, created_at, author_id, author_type,
+                    scope, channel_id, valid_until, superseded_by, recall_count,
+                    last_recalled
+                ) VALUES (
+                    'syn-work-001', 'Synthetic working memory note', 'fact',
+                    '2026-01-01T00:00:00', 'sess-1', 0.8, '{}', 'stated',
+                    '2026-01-01 00:00:00', 'alex', 'user', 'global',
+                    'default', NULL, NULL, 1, NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO episodic_memory (
+                    id, content, source, timestamp, session_id, importance,
+                    metadata_json, veracity, created_at, author_id, author_type,
+                    scope, channel_id, valid_until, superseded_by, recall_count,
+                    last_recalled, event_date, event_date_precision
+                ) VALUES (
+                    'syn-ep-002', 'Synthetic episodic memory note', 'insight',
+                    '2026-01-02T00:00:00', 'sess-2', 0.7, '{}', 'tool',
+                    '2026-01-02 00:00:00', NULL, NULL, 'global',
+                    'default', NULL, NULL, 2, NULL, '2026-01-02', 'day'
+                )
+                """
+            )
+            conn.commit()
 
     def _write_fake_docker(self) -> None:
         self.fake_docker.write_text(
             "#!/usr/bin/env python3\n"
             "import json\n"
             "import os\n"
+            "import subprocess\n"
             "import sys\n"
             "from pathlib import Path\n"
             "\n"
@@ -54,6 +155,10 @@ class TestMnemosyneWrapper(unittest.TestCase):
             "        sys.stderr.write(entry['stderr'])\n"
             "    sys.exit(entry.get('rc', 0))\n"
             "if cmd == 'exec':\n"
+            "    if '/opt/hermes/.venv/bin/python' in sys.argv:\n"
+            "        py_idx = sys.argv.index('/opt/hermes/.venv/bin/python')\n"
+            "        res = subprocess.run([sys.executable] + sys.argv[py_idx + 1:], check=False)\n"
+            "        sys.exit(res.returncode)\n"
             "    sys.stdout.write('fake-mnemosyne-ok\\n')\n"
             "    sys.exit(0)\n"
             "sys.exit(2)\n",
@@ -83,6 +188,7 @@ class TestMnemosyneWrapper(unittest.TestCase):
             "DOCKER_BIN": str(self.fake_docker),
             "FAKE_DOCKER_STATE": str(self.state_file),
             "FAKE_DOCKER_LOG": str(self.log_file),
+            "MNEMOSYNE_DB_PATH": str(self.db_path),
             "MNEMOSYNE_WAIT_RETRIES": "3",
             "MNEMOSYNE_WAIT_SLEEP": "0",
         }
@@ -108,6 +214,90 @@ class TestMnemosyneWrapper(unittest.TestCase):
         self.assertIn("install_central_cli", setup_text)
         self.assertIn("${CENTRAL_BIN_DIR:-/usr/local/bin}", setup_text)
         self.assertIn('ln -sf "${target_bin}" "${USER_LOCAL_BIN}/${bin_name}"', setup_text)
+
+    def test_help_and_no_args_fast_path_skips_docker(self) -> None:
+        self._set_ps_responses([{"rc": 1, "stdout": ""}])
+        for args in ([], ["-h"], ["--help"], ["help"]):
+            with self.subTest(args=args):
+                res = subprocess.run(
+                    [str(MNEMOSYNE_SCRIPT), *args],
+                    env=self._base_env(),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res.returncode, 0, res.stderr)
+                for expected in (
+                    "recall",
+                    "remember",
+                    "get <id>",
+                    "status",
+                    "stats",
+                    "export",
+                    "CONTAINER_NAME",
+                    "mnemosyne_get",
+                    "mnemosyne_recall",
+                ):
+                    self.assertIn(expected, res.stdout)
+                self.assertEqual(self._read_calls(), [])
+
+    def test_get_missing_or_empty_id_fails_loudly_without_docker(self) -> None:
+        self._set_ps_responses([{"rc": 1, "stdout": ""}])
+        for args in (["get"], ["get", ""], ["get", "id-1", "extra"]):
+            with self.subTest(args=args):
+                res = subprocess.run(
+                    [str(MNEMOSYNE_SCRIPT), *args],
+                    env=self._base_env(),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res.returncode, 2)
+                self.assertIn("Usage: mnemosyne get <memory_id>", res.stderr)
+                self.assertEqual(self._read_calls(), [])
+
+    def test_get_queries_python_without_onnx_and_returns_json(self) -> None:
+        self._set_ps_responses(
+            [
+                {"rc": 0, "stdout": "cid-get-001\n"},
+                {"rc": 0, "stdout": "cid-get-002\n"},
+            ]
+        )
+        for memory_id, expected_tier in (
+            ("syn-work-001", "working"),
+            ("syn-ep-002", "episodic"),
+        ):
+            with self.subTest(memory_id=memory_id):
+                res = subprocess.run(
+                    [str(MNEMOSYNE_SCRIPT), "get", memory_id],
+                    env=self._base_env(),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res.returncode, 0, res.stderr)
+                payload = json.loads(res.stdout)
+                self.assertEqual(payload["status"], "ok")
+                self.assertEqual(payload["memory"]["id"], memory_id)
+                self.assertEqual(payload["memory"]["tier"], expected_tier)
+
+        exec_calls = [c for c in self._read_calls() if c[0] == "exec"]
+        self.assertEqual(len(exec_calls), 2)
+        for call in exec_calls:
+            self.assertEqual(call[0:5], ["exec", "-i", call[2], "/opt/hermes/.venv/bin/python", "-c"])
+            self.assertNotIn("/opt/hermes/.venv/bin/mnemosyne", call)
+
+    def test_get_not_found_exits_one_with_clear_error(self) -> None:
+        self._set_ps_responses([{"rc": 0, "stdout": "cid-get-missing\n"}])
+        res = subprocess.run(
+            [str(MNEMOSYNE_SCRIPT), "get", "missing-id-999"],
+            env=self._base_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("not found", res.stderr)
 
     def test_running_container_immediately_found_forwards_exact_args(self) -> None:
         self._set_ps_responses([{"rc": 0, "stdout": "cid-running-123\ncid-older-456\n"}])
@@ -144,22 +334,6 @@ class TestMnemosyneWrapper(unittest.TestCase):
                     "--json",
                 ],
             ],
-        )
-
-    def test_zero_args_forwarded_cleanly(self) -> None:
-        self._set_ps_responses([{"rc": 0, "stdout": "cid-zero-args\n"}])
-        res = subprocess.run(
-            [str(MNEMOSYNE_SCRIPT)],
-            env=self._base_env(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(res.returncode, 0, res.stderr)
-        calls = self._read_calls()
-        self.assertEqual(
-            calls[1],
-            ["exec", "-i", "cid-zero-args", "/opt/hermes/.venv/bin/mnemosyne"],
         )
 
     def test_interactive_tty_uses_it_flags(self) -> None:

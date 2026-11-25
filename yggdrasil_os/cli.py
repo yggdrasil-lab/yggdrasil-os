@@ -133,7 +133,7 @@ def _add_recovery_subparsers(subparsers: argparse._SubParsersAction[argparse.Arg
     subparsers.add_parser(
         "cleanup-storage",
         add_help=False,
-        help="Prune stale Docker containers, volumes, images, endpoints, and journal logs.",
+        help="Prune stale Docker containers, volumes, images, and journal logs.",
     )
 
 
@@ -197,8 +197,7 @@ def _dispatch_recovery_command(
 
 
 def _dispatch_cleanup_command(args: list[str]) -> int:
-    repo_root = Path(__file__).resolve().parents[1]
-    config = parse_cleanup_args(args, repo_root=repo_root)
+    config = parse_cleanup_args(args)
     runner = SubprocessCommandRunner()
     cleanup_storage(
         config,

@@ -152,10 +152,12 @@ class TestHostProvisioning(unittest.TestCase):
         ctx = self._gaia_ctx(sudo_user="tester")
         runner = FakeCommandRunner()
 
-        # Pre-seed deprecated file, Hermes sockets, agy, vault .git, Forge artifacts, stale CLI
+        # Pre-seed deprecated files, Hermes sockets, agy, vault .git, Forge artifacts, stale CLI
         deprecated = self.root_dir / "usr" / "local" / "bin" / "notify-discord.sh"
         deprecated.parent.mkdir(parents=True)
         deprecated.write_text("old", encoding="utf-8")
+        stale_pruner = self.root_dir / "usr" / "local" / "bin" / "prune-network-endpoints"
+        stale_pruner.write_text("old-pruner", encoding="utf-8")
 
         hermes_dir = self.root_dir / "opt" / "odin" / "hermes"
         hermes_dir.mkdir(parents=True)
@@ -183,6 +185,12 @@ class TestHostProvisioning(unittest.TestCase):
             provision_host("gaia", ctx, runner, self.fetcher)
 
         self.assertFalse(deprecated.exists())
+        self.assertFalse(stale_pruner.exists())
+        gaia_manifest = load_manifest("gaia")
+        self.assertIn("/usr/local/bin/prune-network-endpoints", gaia_manifest.remove_paths)
+        self.assertNotIn("/usr/local/bin/prune-network-endpoints", [a.dest for a in gaia_manifest.assets])
+        self.assertFalse((REPO_ROOT / "hosts" / "scripts" / "prune-network-endpoints.sh").exists())
+        self.assertFalse((REPO_ROOT / "network" / "prune_network_endpoints.py").exists())
         self.assertTrue((self.root_dir / "opt" / "kratos" / "data").is_dir())
         self.assertTrue((self.root_dir / "opt" / "eir" / "data").is_dir())
         self.assertTrue((self.root_dir / "opt" / "iris" / "data").is_dir())

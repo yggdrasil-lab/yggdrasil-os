@@ -182,7 +182,6 @@ class TestCleanupStorage(unittest.TestCase):
         systemd = FakeSystemdPort(calls=self.calls)
         runner = FakeCommandRunner(
             calls=self.calls,
-            available_commands={"prune-network-endpoints"},
             handler=lambda cmd: CommandResult(0, "/dev/nvme0n1p2 900G 200G 700G 23% /\n", "")
             if cmd[0] == "df"
             else CommandResult(0, "", ""),
@@ -190,14 +189,13 @@ class TestCleanupStorage(unittest.TestCase):
 
         with contextlib.redirect_stdout(io.StringIO()):
             result = cleanup_storage(
-                CleanupConfig(containers_only=False, repo_root=REPO_ROOT),
+                CleanupConfig(containers_only=False),
                 docker=docker,
                 systemd=systemd,
                 runner=runner,
             )
 
         self.assertFalse(result.containers_only)
-        self.assertTrue(result.pruned_network_endpoints)
         self.assertTrue(result.ran_registry_gc)
 
         self.assertEqual(
@@ -208,24 +206,19 @@ class TestCleanupStorage(unittest.TestCase):
                 "docker volume prune -f",
                 "docker builder prune -a -f --filter until=168h",
                 "docker image prune -a -f",
-                "prune-network-endpoints --all --force",
                 "docker ps -q --filter label=com.docker.swarm.service.name=hephaestus_registry",
                 "docker exec reg-cid-1 registry garbage-collect /etc/docker/registry/config.yml -m",
                 "journalctl --vacuum-size=500M",
                 "df -h /",
             ],
         )
+        self.assertFalse(any("prune-network-endpoints" in call for call in self.calls))
         for call in [c for c in self.calls if c.startswith("docker volume prune")]:
             tokens = call.split()
             self.assertNotIn("-a", tokens)
             self.assertNotIn("--all", tokens)
 
-    def test_in_tree_network_prune_fallback_and_absent_registry_container(self) -> None:
-        fake_repo = self.tmpdir / "repo"
-        (fake_repo / "network").mkdir(parents=True)
-        in_tree_prune = fake_repo / "network" / "prune_network_endpoints.py"
-        in_tree_prune.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-
+    def test_skips_registry_gc_when_registry_container_absent(self) -> None:
         docker = FakeDockerPort(calls=self.calls)
         systemd = FakeSystemdPort(calls=self.calls)
         runner = FakeCommandRunner(calls=self.calls, available_commands=set())
@@ -233,32 +226,30 @@ class TestCleanupStorage(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             result = cleanup_storage(
-                CleanupConfig(containers_only=False, repo_root=fake_repo),
+                CleanupConfig(containers_only=False),
                 docker=docker,
                 systemd=systemd,
                 runner=runner,
             )
-        self.assertTrue(result.pruned_network_endpoints)
         self.assertFalse(result.ran_registry_gc)
-        self.assertIn(f"python3 {in_tree_prune} --all --force", self.calls)
         self.assertFalse(any(c.startswith("docker exec ") for c in self.calls))
+        self.assertFalse(any("prune-network-endpoints" in c for c in self.calls))
         self.assertIn("skipping registry GC", buf.getvalue())
 
     def test_containers_only_prunes_containers_and_anonymous_volumes_only(self) -> None:
         docker = FakeDockerPort(calls=self.calls)
         systemd = FakeSystemdPort(calls=self.calls)
-        runner = FakeCommandRunner(calls=self.calls, available_commands={"prune-network-endpoints"})
+        runner = FakeCommandRunner(calls=self.calls)
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             result = cleanup_storage(
-                CleanupConfig(containers_only=True, repo_root=REPO_ROOT),
+                CleanupConfig(containers_only=True),
                 docker=docker,
                 systemd=systemd,
                 runner=runner,
             )
         self.assertTrue(result.containers_only)
-        self.assertFalse(result.pruned_network_endpoints)
         self.assertFalse(result.ran_registry_gc)
         self.assertEqual(
             self.calls,

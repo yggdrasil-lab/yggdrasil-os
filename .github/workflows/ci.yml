@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check bash syntax on all shell scripts
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find . -name '*.sh' -type f -print0)
+
+      - name: Check for forbidden em or en dashes
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import sys
+
+          bad = []
+          for path in sorted(pathlib.Path(".").rglob("*")):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              for idx, line in enumerate(text.splitlines(), start=1):
+                  if "\u2013" in line or "\u2014" in line:
+                      bad.append(f"{path}:{idx}")
+          if bad:
+              print("Forbidden em/en dashes found:\n" + "\n".join(bad), file=sys.stderr)
+              sys.exit(1)
+          print("Zero em/en dashes found.")
+          PY
+
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v

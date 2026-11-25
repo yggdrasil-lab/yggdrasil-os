@@ -1,170 +1,43 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ==============================================================================
-# Yggdrasil OS - Muspelheim Host Setup & Directory Provisioning
-# ==============================================================================
-# Prepares host paths, permissions, and directories on the Muspelheim Worker node.
-# Idempotent: safe to run multiple times.
-#
-# Usage (Zero-Clone):
+# Yggdrasil OS - Muspelheim Host Setup & Directory Provisioning (Zero-Clone Shim)
+# Usage:
 #   curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_muspelheim.sh | sudo bash
-# ==============================================================================
 
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 fi
-RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main}"
 
-# Clean up deprecated standalone notify-discord.sh (migrated to central Iris gateway)
-rm -f /usr/local/bin/notify-discord.sh
+RUN_ROOT=""
+TMP_DIR=""
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
+    fi
+}
+trap cleanup_tmp_dir EXIT
 
-echo "=== [1/9] Setting up Comics (Komga, Suwayomi & Komf) ==="
-mkdir -p /opt/comics/komga /opt/comics/suwayomi /opt/comics/komf
-mkdir -p /mnt/storage/comics/library
-chown -R 1000:1000 /opt/comics /mnt/storage/comics/library
-echo "  ✓ Comics directories ready"
-
-echo "=== [2/9] Setting up Apollo Core (Media & Storage) ==="
-APOLLO_MUSPEL_SERVICES=("jellyfin" "sonarr" "radarr" "lidarr" "audiobookshelf" "bazarr" "shelfarr")
-for svc in "${APOLLO_MUSPEL_SERVICES[@]}"; do
-    mkdir -p "/opt/apollo-core/${svc}"
-    chown -R 1000:1000 "/opt/apollo-core/${svc}"
-done
-
-MEDIA_SUBDIRS=("Movies" "TV" "Music" "Audiobooks" "Books" "Youtube/audio" "Youtube/video")
-for subdir in "${MEDIA_SUBDIRS[@]}"; do
-    mkdir -p "/mnt/storage/media/${subdir}"
-    chown -R 1000:1000 "/mnt/storage/media/${subdir}"
-done
-
-mkdir -p /mnt/storage/downloads
-chown -R 1000:1000 /mnt/storage/downloads
-
-APOLLO_BACKUPS=("sonarr" "radarr" "lidarr" "prowlarr" "audiobookshelf" "bazarr")
-for bkp in "${APOLLO_BACKUPS[@]}"; do
-    mkdir -p "/mnt/storage/backups/apollo/${bkp}"
-    chown -R 1000:1000 "/mnt/storage/backups/apollo/${bkp}"
-done
-echo "  ✓ Apollo Core (Muspelheim) directories ready"
-
-echo "=== [3/9] Setting up Apollo Supply (VPN Downloader Stack) ==="
-mkdir -p /opt/apollo-supply/gluetun /opt/apollo-supply/qbittorrent /opt/apollo-supply/sabnzbd /opt/apollo-supply/slskd
-mkdir -p /mnt/storage/downloads/slskd/.incomplete
-chown -R 1000:1000 /opt/apollo-supply /mnt/storage/downloads/slskd
-echo "  ✓ Apollo Supply directories ready"
-
-echo "  → Installing Apollo Supply boot persistence service..."
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/apollo-supply-restore.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/apollo-supply-restore.sh" /usr/local/bin/apollo-supply-restore.sh
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../yggdrasil_os/__init__.py" ]; then
+    RUN_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+elif [ -n "${YGGDRASIL_OS_ROOT:-}" ]; then
+    if [ ! -f "${YGGDRASIL_OS_ROOT}/yggdrasil_os/__init__.py" ]; then
+        echo "Error: YGGDRASIL_OS_ROOT=${YGGDRASIL_OS_ROOT} does not contain yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="${YGGDRASIL_OS_ROOT}"
 else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/apollo-supply-restore.sh" -o /usr/local/bin/apollo-supply-restore.sh
-    chmod 0755 /usr/local/bin/apollo-supply-restore.sh
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_URL="${YGGDRASIL_OS_ARCHIVE_URL:-https://github.com/yggdrasil-lab/yggdrasil-os/archive/refs/heads/${YGGDRASIL_OS_REF:-main}.tar.gz}"
+    curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/yggdrasil-os.tar.gz"
+    tar -xzf "${TMP_DIR}/yggdrasil-os.tar.gz" -C "${TMP_DIR}"
+    INIT_PATH="$(find "${TMP_DIR}" -maxdepth 3 -path "*/yggdrasil_os/__init__.py" | head -n 1 || true)"
+    if [ -z "${INIT_PATH}" ]; then
+        echo "Error: Downloaded archive from ${ARCHIVE_URL} lacks yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="$(cd "$(dirname "${INIT_PATH}")/.." >/dev/null 2>&1 && pwd)"
 fi
 
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/systemd/apollo-supply.service" ]; then
-    install -m 0644 "${SCRIPT_DIR}/systemd/apollo-supply.service" /etc/systemd/system/apollo-supply.service
-else
-    curl -fsSL "${RAW_BASE}/hosts/systemd/apollo-supply.service" -o /etc/systemd/system/apollo-supply.service
-    chmod 0644 /etc/systemd/system/apollo-supply.service
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload
-    systemctl enable apollo-supply.service
-    echo "  ✓ Apollo Supply persistence service enabled"
-fi
-
-echo "  → Installing Muspelheim graceful Docker restart tool..."
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/muspelheim-restart-docker.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/muspelheim-restart-docker.sh" /usr/local/bin/muspelheim-restart-docker.sh
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/muspelheim-restart-docker.sh" -o /usr/local/bin/muspelheim-restart-docker.sh
-    chmod 0755 /usr/local/bin/muspelheim-restart-docker.sh
-fi
-echo "  ✓ muspelheim-restart-docker.sh installed to /usr/local/bin"
-
-echo "=== [4/9] Setting up Immich (Photos & AI) ==="
-mkdir -p /mnt/storage/immich/library /opt/immich/model-cache /opt/immich/postgres
-chown -R 1000:1000 /mnt/storage/immich/library /opt/immich/model-cache
-# Note: /opt/immich/postgres is managed by PostgreSQL's entrypoint directly
-echo "  ✓ Immich directories ready"
-
-echo "=== [5/9] Setting up Cerberus (Vaultwarden on Muspelheim) ==="
-mkdir -p /opt/cerberus/vaultwarden /mnt/storage/backups/vaultwarden
-chown -R 1000:1000 /opt/cerberus/vaultwarden /mnt/storage/backups/vaultwarden
-echo "  ✓ Cerberus (Vaultwarden) directories ready"
-
-echo "=== [6/9] Setting up Charon (Sync & Backup Archive) ==="
-mkdir -p /opt/charon/rclone/archive /mnt/storage/backups
-chown -R 1000:1000 /opt/charon
-
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/charon-restore.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/charon-restore.sh" /usr/local/bin/charon-restore
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/charon-restore.sh" -o /usr/local/bin/charon-restore
-    chmod 0755 /usr/local/bin/charon-restore
-fi
-
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/swarm-exec.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/swarm-exec.sh" /usr/local/bin/swarm-exec
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/swarm-exec.sh" -o /usr/local/bin/swarm-exec
-    chmod 0755 /usr/local/bin/swarm-exec
-fi
-echo "  ✓ Charon Archive directories, restore CLI, and swarm-exec ready"
-
-echo "=== [7/9] Setting up RomM (Gaming & ROM Warehouse) ==="
-mkdir -p /opt/romm/db /opt/romm/redis /opt/romm/config /opt/romm/syncthing
-mkdir -p /mnt/storage/roms/library /mnt/storage/roms/assets /mnt/storage/roms/resources /mnt/storage/emulation/saves
-# Note: /opt/romm/db is MariaDB persistence (uid 999:mysql); never recursively chown to 1000:1000
-chown -R 1000:1000 /opt/romm/redis /opt/romm/config /opt/romm/syncthing /mnt/storage/roms /mnt/storage/emulation
-chown -R 999:999 /opt/romm/db
-chmod 0750 /opt/romm/db
-echo "  ✓ RomM directories ready"
-
-echo "=== [8/9] Installing Registry Pin Utility & Pinning Hostname (/etc/hosts) ==="
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../network/pin_registry_host.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/../network/pin_registry_host.sh" /usr/local/bin/pin-registry-host
-else
-    curl -fsSL "${RAW_BASE}/network/pin_registry_host.sh" -o /usr/local/bin/pin-registry-host
-    chmod 0755 /usr/local/bin/pin-registry-host
-fi
-NODE_ROLE=worker /usr/local/bin/pin-registry-host
-echo "  ✓ pin-registry-host installed to /usr/local/bin and local registry pinned"
-
-echo "=== [9/9] Setting up GitHub Runner Auto-Update Timer ==="
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/update-github-runner.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/update-github-runner.sh" /usr/local/bin/update-github-runner.sh
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/update-github-runner.sh" -o /usr/local/bin/update-github-runner.sh
-    chmod 0755 /usr/local/bin/update-github-runner.sh
-fi
-
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/systemd/update-github-runner.service" ]; then
-    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.service" /etc/systemd/system/update-github-runner.service
-else
-    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.service" -o /etc/systemd/system/update-github-runner.service
-    chmod 0644 /etc/systemd/system/update-github-runner.service
-fi
-
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/systemd/update-github-runner.timer" ]; then
-    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.timer" /etc/systemd/system/update-github-runner.timer
-else
-    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.timer" -o /etc/systemd/system/update-github-runner.timer
-    chmod 0644 /etc/systemd/system/update-github-runner.timer
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload
-    systemctl enable --now update-github-runner.timer
-    echo "  ✓ GitHub runner auto-update timer enabled"
-fi
-
-echo ""
-echo "=============================================================================="
-echo "✓ Muspelheim Host Provisioning Complete! Ready for deployments."
-echo "You can now run: sudo muspelheim-restart-docker.sh to safely restart Docker."
-echo "=============================================================================="
-
+PYTHONPATH="${RUN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m yggdrasil_os provision muspelheim "$@"

@@ -1,262 +1,43 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ==============================================================================
-# Yggdrasil OS - Gaia Host Setup & Directory Provisioning
-# ==============================================================================
-# Prepares host paths, permissions, and directories on the Gaia Manager node.
-# Idempotent: safe to run multiple times.
-#
-# Usage (Zero-Clone):
+# Yggdrasil OS - Gaia Host Setup & Directory Provisioning (Zero-Clone Shim)
+# Usage:
 #   curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/setup_gaia.sh | sudo bash
-# ==============================================================================
 
-echo "=== [1/15] Installing Host Prerequisites (gh, jq, base tooling) ==="
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 fi
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/install_prerequisites.sh" ]; then
-    bash "${SCRIPT_DIR}/install_prerequisites.sh"
-else
-    curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/install_prerequisites.sh | bash
-fi
 
-# Clean up deprecated standalone notify-discord.sh (migrated to central Iris gateway)
-rm -f /usr/local/bin/notify-discord.sh
-
-echo "=== [2/15] Setting up Olympus (Ingress & DNS) ==="
-mkdir -p /opt/olympus/adguard/conf /opt/olympus/adguard/work
-chown -R 1000:1000 /opt/olympus/adguard
-echo "  ✓ Olympus directories ready"
-
-echo "=== [3/15] Setting up Odin (Hermes & AI Lab) ==="
-mkdir -p /opt/odin/hermes/home /opt/odin/mnemosyne /mnt/storage/backups/odin/hermes
-chown -R 1000:1000 /opt/odin /mnt/storage/backups/odin/hermes
-chmod -R 775 /opt/odin/mnemosyne
-# Preserve strict private-node directory and socket permissions (go-w) for Hermes gateway_runtime_discovery
-chmod 755 /opt/odin/hermes 2>/dev/null || true
-chmod 600 /opt/odin/hermes/gateway.sock /opt/odin/hermes/gateway.lock 2>/dev/null || true
-
-# Ensure agy CLI symlink and canonical turnkey CLI symlinks exist in user directory
-TARGET_USER=${SUDO_USER:-$(id -un)}
-TARGET_GROUP="$(id -gn "${TARGET_USER}" 2>/dev/null || echo "${TARGET_USER}")"
-USER_LOCAL_BIN="${USER_LOCAL_BIN:-/home/${TARGET_USER}/.local/bin}"
-mkdir -p "${USER_LOCAL_BIN}"
-if [ -f "${USER_LOCAL_BIN}/agy" ]; then
-    ln -sf "${USER_LOCAL_BIN}/agy" /usr/local/bin/agy
-fi
-VAULT_ROOT="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}"
-ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/morning_copilot_aggregator.py" "${USER_LOCAL_BIN}/morning-copilot"
-ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_consolidate_daemon.py" "${USER_LOCAL_BIN}/mnemosyne-dreaming"
-ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_associative.py" "${USER_LOCAL_BIN}/mnemosyne-associative"
-ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mnemosyne_temporal_hygiene.py" "${USER_LOCAL_BIN}/mnemosyne-hygiene-audit"
-ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/mimir_code_graph.py" "${USER_LOCAL_BIN}/mimir-code"
-ln -sf "${VAULT_ROOT}/Forge/odin/hermes-agent/scripts/forseti_visual_gatekeeper.py" "${USER_LOCAL_BIN}/forseti-visual-gatekeeper"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/publish_pwa_visual_review.py" "${USER_LOCAL_BIN}/publish-pwa-visual-review"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/create_forge_pr.py" "${USER_LOCAL_BIN}/create-forge-pr"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/verify_forge_pr.py" "${USER_LOCAL_BIN}/verify-forge-pr"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forge_ship.py" "${USER_LOCAL_BIN}/forge-ship"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forge_merge_verify.py" "${USER_LOCAL_BIN}/forge-merge-verify"
-ln -sf "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py" "${USER_LOCAL_BIN}/kratos-workout"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/romm-ops/scripts/romm_manage.py" "${USER_LOCAL_BIN}/romm-manage"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/gaia-host-ops/scripts/safe_docker_run.py" "${USER_LOCAL_BIN}/safe-docker-run"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/fleet/scripts/huginn_recon.py" "${USER_LOCAL_BIN}/huginn-recon"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/rollout_convergence_gate.py" "${USER_LOCAL_BIN}/rollout-convergence-gate"
-ln -sf "${VAULT_ROOT}/.agents/plugins/court-of-odin/skills/code-review/scripts/forseti_diff_bundle.py" "${USER_LOCAL_BIN}/forseti-diff-bundle"
-chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}"/* 2>/dev/null || true
-echo "  ✓ Odin directories and turnkey CLI symlinks ready"
-
-echo "=== [4/15] Setting up Apollo Core (Manager Services) ==="
-APOLLO_GAIA_SERVICES=("jellystat" "prowlarr" "seerr" "recyclarr")
-for svc in "${APOLLO_GAIA_SERVICES[@]}"; do
-    mkdir -p "/opt/apollo-core/${svc}"
-    chown -R 1000:1000 "/opt/apollo-core/${svc}"
-done
-mkdir -p /opt/apollo-core/jellystat-db
-# Note: /opt/apollo-core/jellystat-db is managed by PostgreSQL's entrypoint directly (do not recursive chown)
-mkdir -p /mnt/storage/backups/apollo/prowlarr
-chown -R 1000:1000 /mnt/storage/backups/apollo/prowlarr
-echo "  ✓ Apollo Core (Gaia) directories ready"
-
-echo "=== [5/15] Setting up Cerberus (Auth & Identity) ==="
-CERBERUS_SERVICES=("authentik" "authelia" "lldap")
-for svc in "${CERBERUS_SERVICES[@]}"; do
-    mkdir -p "/opt/cerberus/${svc}"
-    chown -R 1000:1000 "/opt/cerberus/${svc}"
-done
-mkdir -p /opt/cerberus/postgres
-# Note: /opt/cerberus/postgres is managed by PostgreSQL's entrypoint directly (do not recursive chown)
-mkdir -p /mnt/storage/backups/lldap /mnt/storage/backups/authentik
-chown -R 1000:1000 /mnt/storage/backups/lldap /mnt/storage/backups/authentik
-echo "  ✓ Cerberus directories ready"
-
-echo "=== [6/15] Setting up Charon (Sync & Backup) ==="
-mkdir -p /opt/charon/rclone/sync /opt/charon/rclone/archive
-chown -R 1000:1000 /opt/charon
-VAULT_BASE="${OBSIDIAN_VAULT_PATH:-/opt/atlas/vault}"
-VAULT_PATH="${VAULT_BASE}/second-brain"
-if [ ! -d "${VAULT_PATH}" ]; then
-    mkdir -p "${VAULT_PATH}"
-fi
-chown -R 1000:1000 "${VAULT_PATH}"
-chmod -R o+w "${VAULT_PATH}"
-if [ -d "${VAULT_BASE}/.git" ]; then
-    chown -R "${TARGET_USER}:${TARGET_GROUP}" "${VAULT_BASE}/.git"
-    echo "  ✓ Vault git repository ownership ensured (${TARGET_USER}:${TARGET_GROUP})"
-fi
-echo "  ✓ Charon directories ready"
-
-echo "=== [7/15] Setting up Kratos (Workout Tracker) ==="
-mkdir -p /opt/kratos/data
-chown 1000:1000 /opt/kratos
-# Note: /opt/kratos/data is managed by PostgreSQL's entrypoint directly (do not recursive chown)
-echo "  ✓ Kratos directories ready"
-
-echo "=== [8/15] Setting up Eir (Health Telemetry & Wearables) ==="
-mkdir -p /opt/eir/data
-chown 1000:1000 /opt/eir
-# Note: /opt/eir/data is managed by PostgreSQL's entrypoint directly (do not recursive chown)
-mkdir -p /mnt/storage/backups/eir
-chown -R 1000:1000 /mnt/storage/backups/eir
-echo "  ✓ Eir directories ready"
-
-echo "=== [9/15] Setting up Iris (Notification & Inbound Gateway) ==="
-mkdir -p /opt/iris/data
-chown 1000:1000 /opt/iris
-# Note: /opt/iris/data is managed by PostgreSQL's entrypoint directly (do not recursive chown)
-echo "  ✓ Iris directories ready"
-
-echo "=== [10/15] Setting up Palworld Game Server ==="
-mkdir -p /opt/palworld/data /opt/palworld/backups
-chown -R 1000:1000 /opt/palworld
-echo "  ✓ Palworld directories ready"
-
-echo "=== [11/15] Setting up Hephaestus (Private Container Registry) ==="
-mkdir -p /mnt/storage/registry
-chown 1000:1000 /mnt/storage/registry
-echo "  ✓ Hephaestus directories ready"
-
-echo "=== [12/15] Git Global Optimizations ==="
-git config --global status.submoduleSummary false
-git config --global diff.ignoreSubmodules all
-git config --global submodule.recurse false
-if [ -n "${SUDO_USER}" ] && [ "${SUDO_USER}" != "root" ]; then
-    sudo -u "${TARGET_USER}" git config --global status.submoduleSummary false
-    sudo -u "${TARGET_USER}" git config --global diff.ignoreSubmodules all
-    sudo -u "${TARGET_USER}" git config --global submodule.recurse false
-fi
-echo "  ✓ Git submodule optimizations applied"
-
-echo "=== [13/15] Installing Centralized Deployment Utilities (/usr/local/bin) ==="
-RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main}"
-curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/deploy.sh -o /usr/local/bin/deploy.sh
-curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/ensure_secret.sh -o /usr/local/bin/ensure_secret.sh
-curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/deploy/prune_secrets.sh -o /usr/local/bin/prune_secrets.sh
-chmod +x /usr/local/bin/deploy.sh /usr/local/bin/ensure_secret.sh /usr/local/bin/prune_secrets.sh
-
-install_central_cli() {
-    local script_name="${1:?script_name required}"
-    local bin_name="${2:?bin_name required}"
-    local central_bin_dir="${CENTRAL_BIN_DIR:-/usr/local/bin}"
-    local target_bin="${central_bin_dir}/${bin_name}"
-
-    mkdir -p "${central_bin_dir}"
-    if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/${script_name}" ]; then
-        install -m 0755 "${SCRIPT_DIR}/scripts/${script_name}" "${target_bin}"
-    else
-        curl -fsSL "${RAW_BASE}/hosts/scripts/${script_name}" -o "${target_bin}"
-        chmod 0755 "${target_bin}"
+RUN_ROOT=""
+TMP_DIR=""
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
     fi
-
-    if [ ! -d "${USER_LOCAL_BIN}" ]; then
-        mkdir -p "${USER_LOCAL_BIN}"
-        chown "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}" 2>/dev/null || true
-    fi
-    ln -sf "${target_bin}" "${USER_LOCAL_BIN}/${bin_name}"
-    chown -h "${TARGET_USER}:${TARGET_GROUP}" "${USER_LOCAL_BIN}/${bin_name}" 2>/dev/null || true
 }
+trap cleanup_tmp_dir EXIT
 
-CENTRAL_CLI_SPECS=(
-    "charon-restore.sh:charon-restore"
-    "swarm-exec.sh:swarm-exec"
-    "mnemosyne.sh:mnemosyne"
-)
-for cli_spec in "${CENTRAL_CLI_SPECS[@]}"; do
-    install_central_cli "${cli_spec%%:*}" "${cli_spec#*:}"
-done
-
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../network/prune_network_endpoints.py" ]; then
-    install -m 0755 "${SCRIPT_DIR}/../network/prune_network_endpoints.py" /usr/local/bin/prune-network-endpoints
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../yggdrasil_os/__init__.py" ]; then
+    RUN_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+elif [ -n "${YGGDRASIL_OS_ROOT:-}" ]; then
+    if [ ! -f "${YGGDRASIL_OS_ROOT}/yggdrasil_os/__init__.py" ]; then
+        echo "Error: YGGDRASIL_OS_ROOT=${YGGDRASIL_OS_ROOT} does not contain yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="${YGGDRASIL_OS_ROOT}"
 else
-    curl -fsSL "${RAW_BASE}/network/prune_network_endpoints.py" -o /usr/local/bin/prune-network-endpoints
-    chmod 0755 /usr/local/bin/prune-network-endpoints
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_URL="${YGGDRASIL_OS_ARCHIVE_URL:-https://github.com/yggdrasil-lab/yggdrasil-os/archive/refs/heads/${YGGDRASIL_OS_REF:-main}.tar.gz}"
+    curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/yggdrasil-os.tar.gz"
+    tar -xzf "${TMP_DIR}/yggdrasil-os.tar.gz" -C "${TMP_DIR}"
+    INIT_PATH="$(find "${TMP_DIR}" -maxdepth 3 -path "*/yggdrasil_os/__init__.py" | head -n 1 || true)"
+    if [ -z "${INIT_PATH}" ]; then
+        echo "Error: Downloaded archive from ${ARCHIVE_URL} lacks yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="$(cd "$(dirname "${INIT_PATH}")/.." >/dev/null 2>&1 && pwd)"
 fi
 
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../network/pin_registry_host.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/../network/pin_registry_host.sh" /usr/local/bin/pin-registry-host
-else
-    curl -fsSL "${RAW_BASE}/network/pin_registry_host.sh" -o /usr/local/bin/pin-registry-host
-    chmod 0755 /usr/local/bin/pin-registry-host
-fi
-echo "  ✓ Deployment utilities, Charon restore CLI, swarm-exec, mnemosyne, prune-network-endpoints, and pin-registry-host installed to /usr/local/bin"
-
-echo "  -> Pinning local registry hostname in /etc/hosts (NODE_ROLE=manager)..."
-NODE_ROLE=manager /usr/local/bin/pin-registry-host
-
-echo "=== [14/15] Setting up GitHub Runner Auto-Update Timer ==="
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/scripts/update-github-runner.sh" ]; then
-    install -m 0755 "${SCRIPT_DIR}/scripts/update-github-runner.sh" /usr/local/bin/update-github-runner.sh
-else
-    curl -fsSL "${RAW_BASE}/hosts/scripts/update-github-runner.sh" -o /usr/local/bin/update-github-runner.sh
-    chmod 0755 /usr/local/bin/update-github-runner.sh
-fi
-
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/systemd/update-github-runner.service" ]; then
-    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.service" /etc/systemd/system/update-github-runner.service
-else
-    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.service" -o /etc/systemd/system/update-github-runner.service
-    chmod 0644 /etc/systemd/system/update-github-runner.service
-fi
-
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/systemd/update-github-runner.timer" ]; then
-    install -m 0644 "${SCRIPT_DIR}/systemd/update-github-runner.timer" /etc/systemd/system/update-github-runner.timer
-else
-    curl -fsSL "${RAW_BASE}/hosts/systemd/update-github-runner.timer" -o /etc/systemd/system/update-github-runner.timer
-    chmod 0644 /etc/systemd/system/update-github-runner.timer
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload
-    systemctl enable --now update-github-runner.timer
-    echo "  ✓ GitHub runner auto-update timer enabled"
-fi
-
-echo "=== [15/15] Setting up Gaia Storage Cleanup & Daily Container Prune Timers ==="
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../maintenance/install_cleanup_timer.sh" ]; then
-    RAW_BASE="${RAW_BASE}" bash "${SCRIPT_DIR}/../maintenance/install_cleanup_timer.sh"
-else
-    (set -o pipefail; curl -fsSL "${RAW_BASE}/maintenance/install_cleanup_timer.sh" | RAW_BASE="${RAW_BASE}" bash)
-fi
-
-# Final sweep: Ensure non-root ownership of vault git repository
-if [ -d "${VAULT_BASE}/.git" ]; then
-    chown -R "${TARGET_USER}:${TARGET_GROUP}" "${VAULT_BASE}/.git"
-fi
-
-# Ensure non-root ownership of Forge frontend build and Playwright artifact directories
-for dir_name in dist test-results playwright-report "node_modules/.vite"; do
-    for artifact_dir in "${VAULT_BASE}"/Forge/*/${dir_name} "${VAULT_BASE}"/Forge/*/web/${dir_name}; do
-        if [ -d "${artifact_dir}" ]; then
-            chown -R "${TARGET_USER}:${TARGET_GROUP}" "${artifact_dir}"
-        fi
-    done
-done
-
-# Remove stale root-owned Vite cache directories from prior container runs
-rm -rf "${VAULT_BASE}"/Forge/*/node_modules/.vite_root_owned "${VAULT_BASE}"/Forge/*/web/node_modules/.vite_root_owned 2>/dev/null || true
-
-echo ""
-echo "=============================================================================="
-echo "✓ Gaia Host Provisioning Complete! Ready for Swarm deployments."
-echo "=============================================================================="
+PYTHONPATH="${RUN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m yggdrasil_os provision gaia "$@"

@@ -1,9 +1,8 @@
-#!/bin/bash
-# maintenance/install_cleanup_timer.sh
-# Installs the Gaia cleanup script plus monthly and daily systemd timers.
-# Supports running both locally from a cloned repo or directly piped via curl.
-
+#!/usr/bin/env bash
 set -euo pipefail
+
+# maintenance/install_cleanup_timer.sh (Zero-Clone Shim)
+# Installs the Gaia cleanup script plus monthly and daily systemd timers.
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: This script must be run as root (sudo)." >&2
@@ -14,51 +13,35 @@ SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 fi
-RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main}"
-BIN_PATH="${GAIA_CLEANUP_BIN_PATH:-/usr/local/bin/gaia-cleanup.sh}"
-SYSTEMD_DIR="${GAIA_SYSTEMD_DIR:-/etc/systemd/system}"
 
-install_asset() {
-    local rel_path="$1"
-    local dest_path="$2"
-    local mode="$3"
-
-    mkdir -p "$(dirname "$dest_path")"
-    if [ -n "$SCRIPT_DIR" ] && [ -f "${SCRIPT_DIR}/${rel_path}" ]; then
-        install -m "$mode" "${SCRIPT_DIR}/${rel_path}" "$dest_path"
-    else
-        curl -fsSL "${RAW_BASE}/maintenance/${rel_path}" -o "$dest_path"
-        chmod "$mode" "$dest_path"
+RUN_ROOT=""
+TMP_DIR=""
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
     fi
 }
+trap cleanup_tmp_dir EXIT
 
-echo "Installing cleanup script to ${BIN_PATH}..."
-install_asset "cleanup_storage.sh" "$BIN_PATH" "0755"
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../yggdrasil_os/__init__.py" ]; then
+    RUN_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+elif [ -n "${YGGDRASIL_OS_ROOT:-}" ]; then
+    if [ ! -f "${YGGDRASIL_OS_ROOT}/yggdrasil_os/__init__.py" ]; then
+        echo "Error: YGGDRASIL_OS_ROOT=${YGGDRASIL_OS_ROOT} does not contain yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="${YGGDRASIL_OS_ROOT}"
+else
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_URL="${YGGDRASIL_OS_ARCHIVE_URL:-https://github.com/yggdrasil-lab/yggdrasil-os/archive/refs/heads/${YGGDRASIL_OS_REF:-main}.tar.gz}"
+    curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/yggdrasil-os.tar.gz"
+    tar -xzf "${TMP_DIR}/yggdrasil-os.tar.gz" -C "${TMP_DIR}"
+    INIT_PATH="$(find "${TMP_DIR}" -maxdepth 3 -path "*/yggdrasil_os/__init__.py" | head -n 1 || true)"
+    if [ -z "${INIT_PATH}" ]; then
+        echo "Error: Downloaded archive from ${ARCHIVE_URL} lacks yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="$(cd "$(dirname "${INIT_PATH}")/.." >/dev/null 2>&1 && pwd)"
+fi
 
-echo "Installing systemd service and timer units..."
-UNITS=(
-    "gaia-cleanup.service"
-    "gaia-cleanup.timer"
-    "gaia-container-prune.service"
-    "gaia-container-prune.timer"
-)
-for unit in "${UNITS[@]}"; do
-    install_asset "systemd/${unit}" "${SYSTEMD_DIR}/${unit}" "0644"
-done
-
-echo "Reloading systemd daemon..."
-systemctl daemon-reload
-
-TIMERS=(
-    "gaia-cleanup.timer"
-    "gaia-container-prune.timer"
-)
-for timer in "${TIMERS[@]}"; do
-    echo "Enabling and starting ${timer}..."
-    systemctl enable --now "$timer"
-done
-
-echo "Verifying timer status:"
-systemctl list-timers --all | grep -E "gaia-cleanup|gaia-container-prune|NEXT" || true
-
-echo "Success! Gaia monthly storage cleanup and daily container prune timers are installed and active."
+PYTHONPATH="${RUN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m yggdrasil_os install-cleanup-timer "$@"

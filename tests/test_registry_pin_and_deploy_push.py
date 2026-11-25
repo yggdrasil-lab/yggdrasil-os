@@ -6,11 +6,14 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 PIN_SCRIPT = REPO_ROOT / "network" / "pin_registry_host.sh"
 DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "deploy.sh"
 SETUP_GAIA_SCRIPT = REPO_ROOT / "hosts" / "setup_gaia.sh"
@@ -801,15 +804,23 @@ class TestKanbanDecommissionGuards(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
 
     def test_setup_gaia_preserves_hermes_perms_without_profiles(self) -> None:
-        setup_text = SETUP_GAIA_SCRIPT.read_text(encoding="utf-8")
-        self.assertNotIn("profiles", setup_text, "profiles must not remain in setup_gaia.sh")
-        self.assertIn("chmod 755 /opt/odin/hermes 2>/dev/null || true", setup_text)
-        self.assertIn(
-            "chmod 600 /opt/odin/hermes/gateway.sock /opt/odin/hermes/gateway.lock 2>/dev/null || true",
-            setup_text,
+        from yggdrasil_os import (
+            CommandResult,
+            LocalOrRemoteAssetFetcher,
+            ProvisionContext,
+            load_manifest,
+            provision_host,
         )
 
-        hermes_dir = self.tmpdir / "odin" / "hermes"
+        manifest = load_manifest("gaia")
+        manifest_text = (REPO_ROOT / "yggdrasil_os" / "manifests" / "gaia.json").read_text(encoding="utf-8")
+        self.assertNotIn("profiles", manifest_text, "profiles must not remain in gaia manifest")
+        self.assertIn("/opt/odin/hermes", [pm.path for pm in manifest.path_modes])
+        self.assertIn("/opt/odin/hermes/gateway.sock", [pm.path for pm in manifest.path_modes])
+        self.assertIn("/opt/odin/hermes/gateway.lock", [pm.path for pm in manifest.path_modes])
+
+        root_dir = self.tmpdir / "root"
+        hermes_dir = root_dir / "opt" / "odin" / "hermes"
         hermes_dir.mkdir(parents=True)
         sock_file = hermes_dir / "gateway.sock"
         lock_file = hermes_dir / "gateway.lock"
@@ -819,15 +830,20 @@ class TestKanbanDecommissionGuards(unittest.TestCase):
         sock_file.chmod(0o644)
         lock_file.chmod(0o644)
 
-        chmod_lines = [
-            line.replace("/opt/odin/hermes", str(hermes_dir))
-            for line in setup_text.splitlines()
-            if line.startswith("chmod 755 /opt/odin/hermes")
-            or line.startswith("chmod 600 /opt/odin/hermes/")
-        ]
-        self.assertEqual(len(chmod_lines), 2)
-        res = subprocess.run(["bash", "-e", "-c", "\n".join(chmod_lines)], capture_output=True, text=True, check=False)
-        self.assertEqual(res.returncode, 0, res.stderr)
+        class _NoopRunner:
+            def run(self, argv, *, env=None, check=True, input_text=None):
+                return CommandResult(0, "", "")
+
+            def has_command(self, name):
+                return False
+
+        ctx = ProvisionContext(repo_root=REPO_ROOT, root_dir=root_dir, euid=0)
+        provision_host(
+            "gaia",
+            ctx,
+            _NoopRunner(),
+            LocalOrRemoteAssetFetcher(repo_root=REPO_ROOT, raw_base="https://example.invalid"),
+        )
         self.assertEqual(stat.S_IMODE(hermes_dir.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(sock_file.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(lock_file.stat().st_mode), 0o600)

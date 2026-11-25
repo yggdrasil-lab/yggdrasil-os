@@ -9,11 +9,14 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 MNEMOSYNE_SCRIPT = REPO_ROOT / "hosts" / "scripts" / "mnemosyne.sh"
 SETUP_GAIA_SCRIPT = REPO_ROOT / "hosts" / "setup_gaia.sh"
 
@@ -209,11 +212,50 @@ class TestMnemosyneWrapper(unittest.TestCase):
                 )
                 self.assertEqual(res.returncode, 0, res.stderr)
 
-        setup_text = SETUP_GAIA_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('"mnemosyne.sh:mnemosyne"', setup_text)
-        self.assertIn("install_central_cli", setup_text)
-        self.assertIn("${CENTRAL_BIN_DIR:-/usr/local/bin}", setup_text)
-        self.assertIn('ln -sf "${target_bin}" "${USER_LOCAL_BIN}/${bin_name}"', setup_text)
+        from yggdrasil_os import (
+            CommandResult,
+            LocalOrRemoteAssetFetcher,
+            ProvisionContext,
+            load_manifest,
+            provision_host,
+        )
+
+        manifest = load_manifest("gaia")
+        self.assertTrue(
+            any(c.src == "hosts/scripts/mnemosyne.sh" and c.bin_name == "mnemosyne" for c in manifest.central_clis)
+        )
+
+        class _NoopRunner:
+            def run(self, argv, *, env=None, check=True, input_text=None):
+                return CommandResult(0, "", "")
+
+            def has_command(self, name):
+                return False
+
+        central_bin = self.tmpdir / "usr_local_bin"
+        user_bin = self.tmpdir / "user_local_bin"
+        ctx = ProvisionContext(
+            repo_root=REPO_ROOT,
+            root_dir=self.tmpdir / "root",
+            central_bin_dir=central_bin,
+            user_local_bin=user_bin,
+            vault_path=self.tmpdir / "vault",
+            cleanup_bin_path=self.tmpdir / "cleanup" / "gaia-cleanup.sh",
+            cleanup_systemd_dir=self.tmpdir / "systemd",
+            euid=0,
+        )
+        provision_host(
+            "gaia",
+            ctx,
+            _NoopRunner(),
+            LocalOrRemoteAssetFetcher(repo_root=REPO_ROOT, raw_base="https://example.invalid"),
+        )
+        installed_bin = central_bin / "mnemosyne"
+        linked_bin = user_bin / "mnemosyne"
+        self.assertTrue(installed_bin.is_file())
+        self.assertEqual(stat.S_IMODE(installed_bin.stat().st_mode), 0o755)
+        self.assertTrue(linked_bin.is_symlink())
+        self.assertEqual(Path(os.readlink(linked_bin)), installed_bin)
 
     def test_help_and_no_args_fast_path_skips_docker(self) -> None:
         self._set_ps_responses([{"rc": 1, "stdout": ""}])

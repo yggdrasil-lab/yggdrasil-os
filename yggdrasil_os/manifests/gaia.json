@@ -1,0 +1,125 @@
+{
+  "host": "gaia",
+  "remove_paths": [
+    "/usr/local/bin/notify-discord.sh"
+  ],
+  "pre_scripts": [
+    "hosts/install_prerequisites.sh"
+  ],
+  "directories": [
+    "/opt/olympus/adguard/conf",
+    "/opt/olympus/adguard/work",
+    "/opt/odin/hermes/home",
+    "/opt/odin/mnemosyne",
+    "/mnt/storage/backups/odin/hermes",
+    "/opt/apollo-core/jellystat",
+    "/opt/apollo-core/prowlarr",
+    "/opt/apollo-core/seerr",
+    "/opt/apollo-core/recyclarr",
+    "/opt/apollo-core/jellystat-db",
+    "/mnt/storage/backups/apollo/prowlarr",
+    "/opt/cerberus/authentik",
+    "/opt/cerberus/authelia",
+    "/opt/cerberus/lldap",
+    "/opt/cerberus/postgres",
+    "/mnt/storage/backups/lldap",
+    "/mnt/storage/backups/authentik",
+    "/opt/charon/rclone/sync",
+    "/opt/charon/rclone/archive",
+    "{vault_path}/second-brain",
+    "/opt/kratos/data",
+    "/opt/eir/data",
+    "/mnt/storage/backups/eir",
+    "/opt/iris/data",
+    "/opt/palworld/data",
+    "/opt/palworld/backups",
+    "/mnt/storage/registry"
+  ],
+  "recursive_chowns": [
+    {"path": "/opt/olympus/adguard", "owner": "1000:1000"},
+    {"path": "/opt/odin", "owner": "1000:1000"},
+    {"path": "/mnt/storage/backups/odin/hermes", "owner": "1000:1000"},
+    {"path": "/opt/apollo-core/jellystat", "owner": "1000:1000"},
+    {"path": "/opt/apollo-core/prowlarr", "owner": "1000:1000"},
+    {"path": "/opt/apollo-core/seerr", "owner": "1000:1000"},
+    {"path": "/opt/apollo-core/recyclarr", "owner": "1000:1000"},
+    {"path": "/mnt/storage/backups/apollo/prowlarr", "owner": "1000:1000"},
+    {"path": "/opt/cerberus/authentik", "owner": "1000:1000"},
+    {"path": "/opt/cerberus/authelia", "owner": "1000:1000"},
+    {"path": "/opt/cerberus/lldap", "owner": "1000:1000"},
+    {"path": "/mnt/storage/backups/lldap", "owner": "1000:1000"},
+    {"path": "/mnt/storage/backups/authentik", "owner": "1000:1000"},
+    {"path": "/opt/charon", "owner": "1000:1000"},
+    {"path": "{vault_path}/second-brain", "owner": "1000:1000"},
+    {"path": "{vault_path}/.git", "owner": "{target_owner}", "if_exists": true},
+    {"path": "/mnt/storage/backups/eir", "owner": "1000:1000"},
+    {"path": "/opt/palworld", "owner": "1000:1000"}
+  ],
+  "non_recursive_chowns": [
+    {"path": "/opt/kratos", "owner": "1000:1000"},
+    {"path": "/opt/eir", "owner": "1000:1000"},
+    {"path": "/opt/iris", "owner": "1000:1000"},
+    {"path": "/mnt/storage/registry", "owner": "1000:1000"}
+  ],
+  "recursive_chmods": [
+    {"path": "/opt/odin/mnemosyne", "mode": "0775"},
+    {"path": "{vault_path}/second-brain", "mode": "o+w"}
+  ],
+  "path_modes": [
+    {"path": "/opt/odin/hermes", "mode": "0755", "ignore_missing": true},
+    {"path": "/opt/odin/hermes/gateway.sock", "mode": "0600", "ignore_missing": true},
+    {"path": "/opt/odin/hermes/gateway.lock", "mode": "0600", "ignore_missing": true}
+  ],
+  "assets": [
+    {"src": "deploy/deploy.sh", "dest": "/usr/local/bin/deploy.sh", "mode": "0755"},
+    {"src": "deploy/ensure_secret.sh", "dest": "/usr/local/bin/ensure_secret.sh", "mode": "0755"},
+    {"src": "deploy/prune_secrets.sh", "dest": "/usr/local/bin/prune_secrets.sh", "mode": "0755"},
+    {"src": "deploy/verify_convergence.sh", "dest": "/usr/local/bin/verify_convergence.sh", "mode": "0755"},
+    {"src": "network/prune_network_endpoints.py", "dest": "/usr/local/bin/prune-network-endpoints", "mode": "0755"},
+    {"src": "network/pin_registry_host.sh", "dest": "/usr/local/bin/pin-registry-host", "mode": "0755"},
+    {"src": "hosts/scripts/update-github-runner.sh", "dest": "/usr/local/bin/update-github-runner.sh", "mode": "0755"},
+    {"src": "hosts/systemd/update-github-runner.service", "dest": "/etc/systemd/system/update-github-runner.service", "mode": "0644"},
+    {"src": "hosts/systemd/update-github-runner.timer", "dest": "/etc/systemd/system/update-github-runner.timer", "mode": "0644"}
+  ],
+  "central_clis": [
+    {"src": "hosts/scripts/charon-restore.sh", "bin_name": "charon-restore"},
+    {"src": "hosts/scripts/swarm-exec.sh", "bin_name": "swarm-exec"},
+    {"src": "hosts/scripts/mnemosyne.sh", "bin_name": "mnemosyne"}
+  ],
+  "turnkey_symlinks": [
+    {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/morning_copilot_aggregator.py", "link_name": "morning-copilot"},
+    {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/mnemosyne_consolidate_daemon.py", "link_name": "mnemosyne-dreaming"},
+    {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/mnemosyne_associative.py", "link_name": "mnemosyne-associative"},
+    {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/mnemosyne_temporal_hygiene.py", "link_name": "mnemosyne-hygiene-audit"},
+    {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/mimir_code_graph.py", "link_name": "mimir-code"},
+    {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/forseti_visual_gatekeeper.py", "link_name": "forseti-visual-gatekeeper"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/publish_pwa_visual_review.py", "link_name": "publish-pwa-visual-review"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/create_forge_pr.py", "link_name": "create-forge-pr"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/verify_forge_pr.py", "link_name": "verify-forge-pr"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forge_ship.py", "link_name": "forge-ship"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forge_merge_verify.py", "link_name": "forge-merge-verify"},
+    {"target": "/opt/odin/hermes/skills/health/workout/scripts/kratos_workout_cli.py", "link_name": "kratos-workout"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/romm-ops/scripts/romm_manage.py", "link_name": "romm-manage"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/gaia-host-ops/scripts/safe_docker_run.py", "link_name": "safe-docker-run"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/fleet/scripts/huginn_recon.py", "link_name": "huginn-recon"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/rollout_convergence_gate.py", "link_name": "rollout-convergence-gate"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/code-review/scripts/forseti_diff_bundle.py", "link_name": "forseti-diff-bundle"}
+  ],
+  "conditional_symlinks": [
+    {"target": "{user_local_bin}/agy", "link": "/usr/local/bin/agy"}
+  ],
+  "git_global_config": {
+    "status.submoduleSummary": "false",
+    "diff.ignoreSubmodules": "all",
+    "submodule.recurse": "false"
+  },
+  "post_commands": [
+    {"argv": ["/usr/local/bin/pin-registry-host"], "env": {"NODE_ROLE": "manager"}, "map_first_arg": true}
+  ],
+  "systemd": {
+    "enable": [],
+    "enable_now": ["update-github-runner.timer"]
+  },
+  "install_cleanup_timer": true,
+  "vault_sweeps": true
+}

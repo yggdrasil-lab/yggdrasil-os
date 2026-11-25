@@ -216,23 +216,13 @@ def audit_and_prune_network(
     net_data = inspect_network(net_name, docker=adapter)
     if not net_data:
         return NetworkAuditResult(
-            network=net_name,
-            subnet="",
-            total=0,
-            active=0,
-            orphaned=0,
-            pruned=0,
-            error="Inspect failed",
+            network=net_name, subnet="", total=0, active=0, orphaned=0, pruned=0, error="Inspect failed"
         )
 
     containers = net_data.get("Containers") or {}
     subnet, ips_in_use, ips_available = _extract_ipam_summary(net_data, len(containers))
-
     print(f"=== Network: {net_name} ({subnet}) ===")
-    print(
-        f"Total endpoints: {len(containers)} | "
-        f"IPs in use: {ips_in_use} | Dynamic IPs available: {ips_available}"
-    )
+    print(f"Total endpoints: {len(containers)} | IPs in use: {ips_in_use} | Dynamic IPs available: {ips_available}")
 
     active, orphaned = classify_endpoints(containers, active_tasks, local_cids)
     print(f"Active endpoints retained: {len(active)}")

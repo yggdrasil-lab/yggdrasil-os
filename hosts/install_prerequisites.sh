@@ -2,7 +2,7 @@
 set -e
 
 # ==============================================================================
-# Yggdrasil OS — Host Prerequisites & Tooling Installer
+# Yggdrasil OS - Host Prerequisites & Tooling Installer
 # ==============================================================================
 # Installs essential CLI tools (GitHub CLI, jq, curl, wget, ca-certificates)
 # on Debian/Ubuntu bare-metal hosts.

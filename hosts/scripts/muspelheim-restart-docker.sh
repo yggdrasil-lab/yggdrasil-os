@@ -1,102 +1,47 @@
-#!/bin/bash
-# ==============================================================================
-# Yggdrasil OS - Graceful Docker Restart for Muspelheim (Worker Node)
-# ==============================================================================
-# Flushes disk buffers, cleanly stops standalone Apollo Supply downloaders,
-# restarts the Docker daemon, restores Apollo Supply with VPN health check,
-# and prunes dead container task shells.
-# ==============================================================================
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
-
-# Self-update if running from /usr/local/bin/muspelheim-restart-docker.sh
-if [ "$0" = "/usr/local/bin/muspelheim-restart-docker.sh" ]; then
-    UPDATE_URL="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/scripts/muspelheim-restart-docker.sh"
-    TMP_SCRIPT="/tmp/muspelheim-restart-docker-update.sh"
-    if curl -fsSL --connect-timeout 5 "$UPDATE_URL" -o "$TMP_SCRIPT" 2>/dev/null; then
-        if ! cmp -s "$TMP_SCRIPT" "$0"; then
-            echo "Updating $0 to latest version from GitHub..."
-            mv "$TMP_SCRIPT" "$0"
-            chmod 0755 "$0"
-            exec "$0" "$@"
-        fi
-        rm -f "$TMP_SCRIPT"
-    fi
-fi
+# hosts/scripts/muspelheim-restart-docker.sh (Zero-Clone Shim)
+# Graceful Docker restart, VXLAN cleanup, and Apollo Supply restore on Muspelheim.
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Error: This script must be run as root (sudo)."
+    echo "Error: This script must be run as root (sudo)." >&2
     exit 1
 fi
 
-echo "=== [1/5] Flushing Storage Buffers ==="
-# Protect Arr databases, torrent states, and filesystem metadata on /mnt/storage
-sync
-echo "  ✓ Buffers synced to disk"
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+fi
 
-echo "=== [2/5] Gracefully Stopping Apollo Supply Downloaders ==="
-# Stop dependents before Gluetun VPN drops to prevent connection errors
-if docker info >/dev/null 2>&1; then
-    docker stop slskd sabnzbd qbittorrent gluetun 2>/dev/null || true
-    echo "  ✓ Apollo Supply containers stopped"
+RUN_ROOT=""
+TMP_DIR=""
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
+    fi
+}
+trap cleanup_tmp_dir EXIT
+
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../../yggdrasil_os/__init__.py" ]; then
+    RUN_ROOT="$(cd "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)"
+elif [ -n "${YGGDRASIL_OS_ROOT:-}" ]; then
+    if [ ! -f "${YGGDRASIL_OS_ROOT}/yggdrasil_os/__init__.py" ]; then
+        echo "Error: YGGDRASIL_OS_ROOT=${YGGDRASIL_OS_ROOT} does not contain yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="${YGGDRASIL_OS_ROOT}"
 else
-    echo "  ! Docker daemon not running; skipping container stop"
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_URL="${YGGDRASIL_OS_ARCHIVE_URL:-https://github.com/yggdrasil-lab/yggdrasil-os/archive/refs/heads/${YGGDRASIL_OS_REF:-main}.tar.gz}"
+    curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/yggdrasil-os.tar.gz"
+    tar -xzf "${TMP_DIR}/yggdrasil-os.tar.gz" -C "${TMP_DIR}"
+    INIT_PATH="$(find "${TMP_DIR}" -maxdepth 3 -path "*/yggdrasil_os/__init__.py" | head -n 1 || true)"
+    if [ -z "${INIT_PATH}" ]; then
+        echo "Error: Downloaded archive from ${ARCHIVE_URL} lacks yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="$(cd "$(dirname "${INIT_PATH}")/.." >/dev/null 2>&1 && pwd)"
 fi
 
-echo "=== [3/5] Restarting Docker Service ==="
-systemctl stop docker.socket docker.service 2>/dev/null || systemctl stop docker
-if command -v ip >/dev/null 2>&1; then
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        case "$line" in
-            *" state DOWN "*|*" state DOWN")
-                iface="${line#*:}"
-                iface="${iface%%:*}"
-                iface="${iface%%@*}"
-                iface="${iface//[[:space:]]/}"
-                case "$iface" in
-                    vx-*)
-                        echo "Removing stale down VXLAN interface: ${iface}"
-                        ip link delete "$iface" 2>/dev/null || true
-                        ;;
-                esac
-                ;;
-        esac
-    done < <(ip -o link show type vxlan 2>/dev/null || true)
-fi
-systemctl start docker
-echo "  ✓ Docker service restarted"
-
-echo "=== [4/5] Waiting for Docker Daemon Readiness ==="
-MAX_WAIT=30
-WAITED=0
-until docker info >/dev/null 2>&1 || [ "$WAITED" -ge "$MAX_WAIT" ]; do
-    sleep 2
-    WAITED=$((WAITED + 2))
-done
-
-if ! docker info >/dev/null 2>&1; then
-    echo "Error: Docker daemon failed to become responsive after ${MAX_WAIT}s"
-    exit 1
-fi
-echo "  ✓ Docker daemon is online and responsive"
-
-echo "=== [5/5] Restoring Apollo Supply & Pruning Exited Debris ==="
-# Invoke restore orchestrator to start Gluetun, wait for health, and start dependents
-APOLLO_RESTORE_SCRIPT="${APOLLO_RESTORE_SCRIPT:-/usr/local/bin/apollo-supply-restore.sh}"
-if [ -x "$APOLLO_RESTORE_SCRIPT" ]; then
-    "$APOLLO_RESTORE_SCRIPT"
-elif [ -f "$(dirname "${BASH_SOURCE[0]}")/apollo-supply-restore.sh" ]; then
-    bash "$(dirname "${BASH_SOURCE[0]}")/apollo-supply-restore.sh"
-else
-    curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/hosts/scripts/apollo-supply-restore.sh | bash
-fi
-
-# Prune dead/exited containers from Swarm worker tasks
-docker container prune -f >/dev/null 2>&1 || true
-echo "  ✓ Exited container debris pruned"
-
-echo ""
-echo "=============================================================================="
-echo "✓ Muspelheim Docker restart and recovery complete!"
-echo "=============================================================================="
+PYTHONPATH="${RUN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m yggdrasil_os restart-docker muspelheim "$@"

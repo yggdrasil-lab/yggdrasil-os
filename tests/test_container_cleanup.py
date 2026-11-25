@@ -1,14 +1,37 @@
 #!/usr/bin/env python3
-"""Unit tests for orphaned container and anonymous volume cleanup scripts."""
+"""Unit tests for Gaia storage cleanup and Swarm startup orchestrator."""
+
+from __future__ import annotations
 
 import configparser
+import contextlib
+import io
+import json
 import shutil
+import stat
 import subprocess
+import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Callable, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from yggdrasil_os import (  # noqa: E402
+    CleanupConfig,
+    CommandExecutionError,
+    CommandResult,
+    StartupContext,
+    cleanup_storage,
+    cli,
+    parse_cleanup_args,
+    run_startup_orchestrator,
+)
+
 CLEANUP_SCRIPT = REPO_ROOT / "maintenance" / "cleanup_storage.sh"
 INSTALL_TIMER_SCRIPT = REPO_ROOT / "maintenance" / "install_cleanup_timer.sh"
 SETUP_GAIA_SCRIPT = REPO_ROOT / "hosts" / "setup_gaia.sh"
@@ -20,16 +43,101 @@ DAILY_PRUNE_TIMER = SYSTEMD_DIR / "gaia-container-prune.timer"
 STARTUP_SCRIPT = REPO_ROOT / "swarm" / "startup_orchestrator.sh"
 
 
-def _write_executable(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o755)
-
-
 def _parse_ini(path: Path) -> configparser.ConfigParser:
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str
     parser.read(path, encoding="utf-8")
     return parser
+
+
+class FakeClock:
+    def __init__(self, start: float = 100.0) -> None:
+        self.now = start
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class FakeCommandRunner:
+    def __init__(
+        self,
+        *,
+        calls: list[str] | None = None,
+        available_commands: set[str] | None = None,
+        handler: Callable[[tuple[str, ...]], CommandResult] | None = None,
+    ) -> None:
+        self.calls = calls if calls is not None else []
+        self.available_commands = available_commands if available_commands is not None else set()
+        self._handler = handler
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> CommandResult:
+        cmd = tuple(argv)
+        self.calls.append(" ".join(cmd))
+        res = self._handler(cmd) if self._handler else CommandResult(0, "", "")
+        if check and res.returncode != 0:
+            raise CommandExecutionError(cmd, res.returncode, res.stdout, res.stderr)
+        return res
+
+    def has_command(self, name: str) -> bool:
+        return name in self.available_commands
+
+
+class FakeDockerPort:
+    def __init__(
+        self,
+        *,
+        calls: list[str] | None = None,
+        handler: Callable[[tuple[str, ...]], CommandResult] | None = None,
+    ) -> None:
+        self.calls = calls if calls is not None else []
+        self._handler = handler
+
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        stdin_text: str | None = None,
+        timeout: float | None = None,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+        check: bool = False,
+    ) -> CommandResult:
+        cmd = tuple(args)
+        self.calls.append("docker " + " ".join(cmd))
+        res = self._handler(cmd) if self._handler else CommandResult(0, "", "")
+        if check and res.returncode != 0:
+            raise CommandExecutionError(("docker", *cmd), res.returncode, res.stdout, res.stderr)
+        return res
+
+
+class FakeSystemdPort:
+    def __init__(self, *, calls: list[str] | None = None, vacuum_rc: int = 0) -> None:
+        self.calls = calls if calls is not None else []
+        self.vacuum_rc = vacuum_rc
+
+    def stop_units(self, units: Sequence[str]) -> CommandResult:
+        self.calls.append("systemctl stop " + " ".join(units))
+        return CommandResult(0, "", "")
+
+    def start_unit(self, unit: str) -> CommandResult:
+        self.calls.append(f"systemctl start {unit}")
+        return CommandResult(0, "", "")
+
+    def vacuum_journal(self, max_size: str) -> CommandResult:
+        self.calls.append(f"journalctl --vacuum-size={max_size}")
+        return CommandResult(self.vacuum_rc, "", "vacuum error" if self.vacuum_rc else "")
 
 
 class TestBashSyntax(unittest.TestCase):
@@ -57,39 +165,7 @@ class TestBashSyntax(unittest.TestCase):
 class TestCleanupStorage(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp(prefix="test-cleanup-storage-"))
-        self.mock_bin = self.tmpdir / "bin"
-        self.mock_bin.mkdir()
-        self.docker_log = self.tmpdir / "docker.log"
-        self.df_log = self.tmpdir / "df.log"
-        self.journal_log = self.tmpdir / "journal.log"
-        self.net_prune_log = self.tmpdir / "net_prune.log"
-
-        _write_executable(
-            self.mock_bin / "docker",
-            "#!/usr/bin/env bash\n"
-            f"printf '%s\\n' \"$*\" >> {self.docker_log}\n"
-            "if [ \"${1:-}\" = \"ps\" ] && [ -n \"${MOCK_REGISTRY_CID:-}\" ]; then\n"
-            "  printf '%s\\n' \"$MOCK_REGISTRY_CID\"\n"
-            "fi\n"
-            "exit 0\n",
-        )
-        _write_executable(
-            self.mock_bin / "df",
-            "#!/usr/bin/env bash\n"
-            f"printf '%s\\n' \"$*\" >> {self.df_log}\n"
-            "echo 'Filesystem      Size  Used Avail Use% Mounted on'\n"
-            "echo '/dev/nvme0n1p2  900G  200G  700G  23% /'\n",
-        )
-        _write_executable(
-            self.mock_bin / "journalctl",
-            "#!/usr/bin/env bash\n"
-            f"printf '%s\\n' \"$*\" >> {self.journal_log}\n",
-        )
-        _write_executable(
-            self.mock_bin / "prune-network-endpoints",
-            "#!/usr/bin/env bash\n"
-            f"printf '%s\\n' \"$*\" >> {self.net_prune_log}\n",
-        )
+        self.calls: list[str] = []
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -97,131 +173,116 @@ class TestCleanupStorage(unittest.TestCase):
     def test_prunes_containers_and_anonymous_volumes_before_builder_and_image_prune(
         self,
     ) -> None:
-        env = {
-            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(self.tmpdir),
-        }
-        res = subprocess.run(
-            ["bash", str(CLEANUP_SCRIPT)],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
+        def docker_handler(cmd: tuple[str, ...]) -> CommandResult:
+            if cmd[:2] == ("ps", "-q"):
+                return CommandResult(0, "reg-cid-1\n", "")
+            return CommandResult(0, "", "")
+
+        docker = FakeDockerPort(calls=self.calls, handler=docker_handler)
+        systemd = FakeSystemdPort(calls=self.calls)
+        runner = FakeCommandRunner(
+            calls=self.calls,
+            available_commands={"prune-network-endpoints"},
+            handler=lambda cmd: CommandResult(0, "/dev/nvme0n1p2 900G 200G 700G 23% /\n", "")
+            if cmd[0] == "df"
+            else CommandResult(0, "", ""),
         )
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
 
-        docker_calls = self.docker_log.read_text(encoding="utf-8").splitlines()
-        container_prune_cmd = "container prune -f --filter until=24h"
-        volume_prune_cmd = "volume prune -f"
-        builder_prune_cmd = "builder prune -a -f --filter until=168h"
-        image_prune_cmd = "image prune -a -f"
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = cleanup_storage(
+                CleanupConfig(containers_only=False, repo_root=REPO_ROOT),
+                docker=docker,
+                systemd=systemd,
+                runner=runner,
+            )
 
-        self.assertIn(container_prune_cmd, docker_calls)
-        self.assertIn(volume_prune_cmd, docker_calls)
-        self.assertIn(builder_prune_cmd, docker_calls)
-        self.assertIn(image_prune_cmd, docker_calls)
-
-        volume_calls = [c for c in docker_calls if c.startswith("volume prune")]
-        for call in volume_calls:
-            tokens = call.split()
-            self.assertNotIn("-a", tokens)
-            self.assertNotIn("--all", tokens)
-
-        c_idx = docker_calls.index(container_prune_cmd)
-        v_idx = docker_calls.index(volume_prune_cmd)
-        b_idx = docker_calls.index(builder_prune_cmd)
-        i_idx = docker_calls.index(image_prune_cmd)
-
-        self.assertLess(c_idx, v_idx)
-        self.assertLess(c_idx, b_idx)
-        self.assertLess(c_idx, i_idx)
-        self.assertLess(v_idx, b_idx)
-        self.assertLess(v_idx, i_idx)
+        self.assertFalse(result.containers_only)
+        self.assertTrue(result.pruned_network_endpoints)
+        self.assertTrue(result.ran_registry_gc)
 
         self.assertEqual(
-            self.journal_log.read_text(encoding="utf-8").splitlines(),
-            ["--vacuum-size=500M"],
-        )
-        self.assertEqual(
-            self.df_log.read_text(encoding="utf-8").splitlines(),
-            ["-h /", "-h /"],
-        )
-        self.assertEqual(
-            self.net_prune_log.read_text(encoding="utf-8").splitlines(),
-            ["--all --force"],
-        )
-
-    def _run_cleanup(
-        self,
-        args: list[str] | None = None,
-        extra_env: dict[str, str] | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        env = {
-            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(self.tmpdir),
-        }
-        if extra_env:
-            env.update(extra_env)
-        cmd = ["bash", str(CLEANUP_SCRIPT)]
-        if args:
-            cmd.extend(args)
-        return subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    def test_containers_only_prunes_containers_and_anonymous_volumes_only(self) -> None:
-        res = self._run_cleanup(
-            args=["--containers-only"],
-            extra_env={"MOCK_REGISTRY_CID": "reg-123"},
-        )
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-
-        docker_calls = self.docker_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(
-            docker_calls,
+            self.calls,
             [
-                "container prune -f --filter until=24h",
-                "volume prune -f",
+                "df -h /",
+                "docker container prune -f --filter until=24h",
+                "docker volume prune -f",
+                "docker builder prune -a -f --filter until=168h",
+                "docker image prune -a -f",
+                "prune-network-endpoints --all --force",
+                "docker ps -q --filter label=com.docker.swarm.service.name=hephaestus_registry",
+                "docker exec reg-cid-1 registry garbage-collect /etc/docker/registry/config.yml -m",
+                "journalctl --vacuum-size=500M",
+                "df -h /",
             ],
         )
-
-        volume_calls = [c for c in docker_calls if c.startswith("volume prune")]
-        for call in volume_calls:
+        for call in [c for c in self.calls if c.startswith("docker volume prune")]:
             tokens = call.split()
             self.assertNotIn("-a", tokens)
             self.assertNotIn("--all", tokens)
 
-        self.assertFalse(self.journal_log.exists())
-        self.assertFalse(self.net_prune_log.exists())
+    def test_in_tree_network_prune_fallback_and_absent_registry_container(self) -> None:
+        fake_repo = self.tmpdir / "repo"
+        (fake_repo / "network").mkdir(parents=True)
+        in_tree_prune = fake_repo / "network" / "prune_network_endpoints.py"
+        in_tree_prune.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+        docker = FakeDockerPort(calls=self.calls)
+        systemd = FakeSystemdPort(calls=self.calls)
+        runner = FakeCommandRunner(calls=self.calls, available_commands=set())
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = cleanup_storage(
+                CleanupConfig(containers_only=False, repo_root=fake_repo),
+                docker=docker,
+                systemd=systemd,
+                runner=runner,
+            )
+        self.assertTrue(result.pruned_network_endpoints)
+        self.assertFalse(result.ran_registry_gc)
+        self.assertIn(f"python3 {in_tree_prune} --all --force", self.calls)
+        self.assertFalse(any(c.startswith("docker exec ") for c in self.calls))
+        self.assertIn("skipping registry GC", buf.getvalue())
+
+    def test_containers_only_prunes_containers_and_anonymous_volumes_only(self) -> None:
+        docker = FakeDockerPort(calls=self.calls)
+        systemd = FakeSystemdPort(calls=self.calls)
+        runner = FakeCommandRunner(calls=self.calls, available_commands={"prune-network-endpoints"})
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = cleanup_storage(
+                CleanupConfig(containers_only=True, repo_root=REPO_ROOT),
+                docker=docker,
+                systemd=systemd,
+                runner=runner,
+            )
+        self.assertTrue(result.containers_only)
+        self.assertFalse(result.pruned_network_endpoints)
+        self.assertFalse(result.ran_registry_gc)
         self.assertEqual(
-            self.df_log.read_text(encoding="utf-8").splitlines(),
-            ["-h /", "-h /"],
+            self.calls,
+            [
+                "df -h /",
+                "docker container prune -f --filter until=24h",
+                "docker volume prune -f",
+                "df -h /",
+            ],
         )
-        self.assertIn("Gaia Containers-Only Cleanup Finished", res.stdout)
+        self.assertIn("Gaia Containers-Only Cleanup Finished", buf.getvalue())
 
     def test_unknown_flag_fails_loudly_without_running_cleanup(self) -> None:
         for bad_args in (["--bogus"], ["--containers-only", "--bogus"], ["unexpected"]):
             with self.subTest(args=bad_args):
-                for log_file in (
-                    self.docker_log,
-                    self.df_log,
-                    self.journal_log,
-                    self.net_prune_log,
-                ):
-                    log_file.unlink(missing_ok=True)
+                with self.assertRaisesRegex(ValueError, "Unknown argument"):
+                    parse_cleanup_args(bad_args)
 
-                res = self._run_cleanup(args=bad_args)
-                self.assertNotEqual(res.returncode, 0)
-                self.assertIn("Unknown argument", res.stderr)
-                self.assertIn(bad_args[-1], res.stderr)
-                self.assertFalse(self.docker_log.exists())
-                self.assertFalse(self.df_log.exists())
-                self.assertFalse(self.journal_log.exists())
-                self.assertFalse(self.net_prune_log.exists())
+        err_buf = io.StringIO()
+        with contextlib.redirect_stderr(err_buf):
+            rc = cli.main(["cleanup-storage", "--bogus"])
+        self.assertEqual(rc, 1)
+        self.assertIn("Unknown argument", err_buf.getvalue())
+        self.assertIn("--bogus", err_buf.getvalue())
 
 
 class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
@@ -254,176 +315,291 @@ class TestContainerPruneUnitsAndInstaller(unittest.TestCase):
 
 class TestStartupOrchestrator(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-startup-orchestrator-"))
-        self.mock_bin = self.tmpdir / "bin"
-        self.mock_bin.mkdir()
-        self.state_dir = self.tmpdir / "state"
-        self.state_dir.mkdir()
-        self.docker_log = self.tmpdir / "docker.log"
+        self.calls: list[str] = []
 
-        for name in ("created", "exited", "dead"):
-            (self.state_dir / name).write_text("", encoding="utf-8")
-        (self.state_dir / "has_runner").write_text("0", encoding="utf-8")
-        (self.state_dir / "runner_running").write_text("false", encoding="utf-8")
-
-        mock_docker = (
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            f"STATE_DIR={self.state_dir}\n"
-            f"printf '%s\\n' \"$*\" >> {self.docker_log}\n"
-            "cmd=\"${1:-}\"\n"
-            "case \"$cmd\" in\n"
-            "  info)\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  swarm)\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  service)\n"
-            "    if [ \"${2:-}\" = \"inspect\" ]; then\n"
-            "      exit 1\n"
-            "    fi\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  inspect)\n"
-            "    cat \"$STATE_DIR/runner_running\"\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  start)\n"
-            "    if [ \"${2:-}\" = \"gaia-runner\" ]; then\n"
-            "      echo 'true' > \"$STATE_DIR/runner_running\"\n"
-            "    fi\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  ps)\n"
-            "    case \"$*\" in\n"
-            "      *\"--format {{.Names}}\"*)\n"
-            "        if [ \"$(cat \"$STATE_DIR/has_runner\")\" = \"1\" ]; then\n"
-            "          echo 'gaia-runner'\n"
-            "        fi\n"
-            "        ;;\n"
-            "      *\"--filter status=running\"*)\n"
-            "        if [ \"$(cat \"$STATE_DIR/has_runner\")\" = \"1\" ] && [ \"$(cat \"$STATE_DIR/runner_running\")\" = \"true\" ]; then\n"
-            "          echo 'cid-gaia-runner'\n"
-            "        fi\n"
-            "        ;;\n"
-            "      *\"--filter status=created --filter status=exited --filter status=dead\"*)\n"
-            "        cat \"$STATE_DIR/created\" \"$STATE_DIR/exited\" \"$STATE_DIR/dead\"\n"
-            "        ;;\n"
-            "      *\"--filter status=dead\"*)\n"
-            "        cat \"$STATE_DIR/dead\"\n"
-            "        ;;\n"
-            "    esac\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  container)\n"
-            "    if [ \"${2:-}\" = \"prune\" ]; then\n"
-            "      : > \"$STATE_DIR/created\"\n"
-            "      : > \"$STATE_DIR/exited\"\n"
-            "    fi\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  rm)\n"
-            "    shift\n"
-            "    for arg in \"$@\"; do\n"
-            "      case \"$arg\" in -*) continue ;; esac\n"
-            "      grep -vxF -- \"$arg\" \"$STATE_DIR/dead\" > \"$STATE_DIR/dead.tmp\" || true\n"
-            "      mv \"$STATE_DIR/dead.tmp\" \"$STATE_DIR/dead\"\n"
-            "    done\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  volume)\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "  node)\n"
-            "    echo 'ID HOSTNAME STATUS AVAILABILITY MANAGER STATUS'\n"
-            "    echo 'node1 * gaia Ready Active Leader'\n"
-            "    exit 0\n"
-            "    ;;\n"
-            "esac\n"
-            "exit 0\n"
+    def test_permission_gate_and_readiness_timeout(self) -> None:
+        docker_denied = FakeDockerPort(
+            calls=self.calls,
+            handler=lambda _cmd: CommandResult(1, "", "permission denied"),
         )
-        _write_executable(self.mock_bin / "docker", mock_docker)
+        with self.assertRaisesRegex(PermissionError, "docker"):
+            run_startup_orchestrator(
+                StartupContext(euid=1000),
+                docker=docker_denied,
+                clock=FakeClock(),
+            )
+        self.assertEqual(self.calls, ["docker info"])
 
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        self.calls.clear()
+        docker_group = FakeDockerPort(
+            calls=self.calls,
+            handler=lambda cmd: CommandResult(1, "", "") if cmd[:2] == ("service", "inspect") else CommandResult(0, "", ""),
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            res_group = run_startup_orchestrator(
+                StartupContext(euid=1000),
+                docker=docker_group,
+                clock=FakeClock(),
+            )
+        self.assertTrue(res_group.converged)
 
-    def _run_startup(self) -> subprocess.CompletedProcess[str]:
-        env = {
-            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(self.tmpdir),
+        timeout_clock = FakeClock()
+        docker_down = FakeDockerPort(
+            handler=lambda _cmd: CommandResult(1, "", "daemon down"),
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "60 seconds"):
+                run_startup_orchestrator(
+                    StartupContext(euid=0),
+                    docker=docker_down,
+                    clock=timeout_clock,
+                )
+        self.assertEqual(sum(timeout_clock.sleeps), 60)
+
+    def test_core_services_convergence_auto_heal_and_batch_filtering(self) -> None:
+        state = {
+            "adguard_polls": 0,
+            "converge_polls": 0,
+            "healed": False,
         }
-        return subprocess.run(
-            ["bash", str(STARTUP_SCRIPT)],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+
+        def docker_handler(cmd: tuple[str, ...]) -> CommandResult:
+            if cmd == ("service", "inspect", "olympus_adguardhome"):
+                return CommandResult(0, "ok\n", "")
+            if cmd == ("service", "inspect", "olympus_traefik"):
+                return CommandResult(0, "ok\n", "")
+            if cmd[:2] == ("service", "inspect"):
+                return CommandResult(1, "", "not found")
+            if cmd == ("service", "ls", "--format", "{{.Name}} {{.Replicas}}"):
+                state["adguard_polls"] += 1
+                adguard_rep = "0/1" if state["adguard_polls"] == 1 else "1/1"
+                return CommandResult(0, f"olympus_adguardhome {adguard_rep}\nolympus_traefik 0/1\n", "")
+            if cmd == ("service", "ls", "--format", "{{.Name}}\t{{.Replicas}}"):
+                state["converge_polls"] += 1
+                app_rep = "1/1" if state["healed"] else "0/1"
+                return CommandResult(0, f"app_web\t{app_rep}\nbatch_job\t0/1\n", "")
+            if cmd[:3] == ("service", "ps", "batch_job"):
+                return CommandResult(0, "", "")
+            if cmd == ("service", "ps", "app_web", "--filter", "desired-state=running", "-q"):
+                return CommandResult(0, "task-1\n", "")
+            if cmd == ("service", "ps", "app_web", "--no-trunc", "--format", "{{.Error}}"):
+                return CommandResult(0, "No such image: registry.local/app:latest\n", "")
+            if cmd == ("service", "update", "--force", "app_web"):
+                state["healed"] = True
+                return CommandResult(0, "", "")
+            if cmd[:2] == ("node", "ls"):
+                return CommandResult(0, "node1 * gaia Ready Active Leader\n", "")
+            return CommandResult(0, "", "")
+
+        clock = FakeClock()
+        docker = FakeDockerPort(calls=self.calls, handler=docker_handler)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = run_startup_orchestrator(
+                StartupContext(euid=0),
+                docker=docker,
+                clock=clock,
+            )
+
+        self.assertIn("docker swarm update --task-history-limit 1", self.calls)
+        self.assertEqual(result.core_ready, ("olympus_adguardhome",))
+        self.assertEqual(result.core_timed_out, ("olympus_traefik",))
+        self.assertTrue(result.converged)
+        self.assertEqual(result.healed_services, ("app_web",))
+        self.assertIn("docker service update --force app_web", self.calls)
+        self.assertNotIn("docker service update --force batch_job", self.calls)
 
     def test_created_only_containers_trigger_prune_after_gaia_runner_guard(self) -> None:
-        (self.state_dir / "has_runner").write_text("1", encoding="utf-8")
-        (self.state_dir / "runner_running").write_text("false", encoding="utf-8")
-        (self.state_dir / "created").write_text("cid-created-1\n", encoding="utf-8")
+        state = {
+            "runner_running": False,
+            "created": ["cid-created-1"],
+        }
 
-        res = self._run_startup()
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        def docker_handler(cmd: tuple[str, ...]) -> CommandResult:
+            if cmd[:2] == ("service", "inspect"):
+                return CommandResult(1, "", "")
+            if cmd == ("ps", "-a", "--format", "{{.Names}}"):
+                return CommandResult(0, "gaia-runner\n", "")
+            if cmd == ("inspect", "-f", "{{.State.Running}}", "gaia-runner"):
+                return CommandResult(0, "true\n" if state["runner_running"] else "false\n", "")
+            if cmd == ("start", "gaia-runner"):
+                state["runner_running"] = True
+                return CommandResult(0, "", "")
+            if cmd == ("ps", "-a", "--filter", "status=created", "--filter", "status=exited", "--filter", "status=dead", "-q"):
+                return CommandResult(0, "\n".join(state["created"]), "")
+            if cmd == ("container", "prune", "-f"):
+                state["created"] = []
+                return CommandResult(0, "", "")
+            if cmd == ("ps", "-q", "--filter", "status=running"):
+                return CommandResult(0, "cid-gaia-runner\n" if state["runner_running"] else "", "")
+            return CommandResult(0, "", "")
 
-        docker_calls = self.docker_log.read_text(encoding="utf-8").splitlines()
-        self.assertIn("start gaia-runner", docker_calls)
-        self.assertIn("container prune -f", docker_calls)
-        self.assertIn("volume prune -f", docker_calls)
+        buf = io.StringIO()
+        docker = FakeDockerPort(calls=self.calls, handler=docker_handler)
+        with contextlib.redirect_stdout(buf):
+            result = run_startup_orchestrator(
+                StartupContext(euid=0),
+                docker=docker,
+                clock=FakeClock(),
+            )
 
-        volume_calls = [c for c in docker_calls if c.startswith("volume prune")]
-        for call in volume_calls:
+        self.assertTrue(result.started_runner)
+        self.assertTrue(result.pruned_stopped_containers)
+        self.assertEqual(result.running_count, 1)
+        self.assertEqual(result.stopped_count, 0)
+
+        self.assertIn("docker start gaia-runner", self.calls)
+        self.assertIn("docker container prune -f", self.calls)
+        self.assertIn("docker volume prune -f", self.calls)
+        for call in [c for c in self.calls if c.startswith("docker volume prune")]:
             tokens = call.split()
             self.assertNotIn("-a", tokens)
             self.assertNotIn("--all", tokens)
 
-        runner_idx = docker_calls.index("start gaia-runner")
-        c_prune_idx = docker_calls.index("container prune -f")
-        v_prune_idx = docker_calls.index("volume prune -f")
-        self.assertLess(runner_idx, c_prune_idx)
-        self.assertLess(c_prune_idx, v_prune_idx)
-
+        self.assertLess(
+            self.calls.index("docker start gaia-runner"),
+            self.calls.index("docker container prune -f"),
+        )
+        self.assertLess(
+            self.calls.index("docker container prune -f"),
+            self.calls.index("docker volume prune -f"),
+        )
         ps_created_calls = [
             c
-            for c in docker_calls
-            if c == "ps -a --filter status=created --filter status=exited --filter status=dead -q"
+            for c in self.calls
+            if c == "docker ps -a --filter status=created --filter status=exited --filter status=dead -q"
         ]
         self.assertEqual(len(ps_created_calls), 2)
-        self.assertIn("Stopped/Dead Containers:   0", res.stdout)
+        self.assertIn("Stopped/Dead Containers:   0", buf.getvalue())
 
     def test_dead_containers_invoke_rm_f_v_and_volume_prune(self) -> None:
-        (self.state_dir / "has_runner").write_text("1", encoding="utf-8")
-        (self.state_dir / "runner_running").write_text("true", encoding="utf-8")
-        (self.state_dir / "dead").write_text("cid-dead-1\ncid-dead-2\n", encoding="utf-8")
+        state = {"dead": ["cid-dead-1", "cid-dead-2"]}
 
-        res = self._run_startup()
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        def docker_handler(cmd: tuple[str, ...]) -> CommandResult:
+            if cmd[:2] == ("service", "inspect"):
+                return CommandResult(1, "", "")
+            if cmd == ("ps", "-a", "--format", "{{.Names}}"):
+                return CommandResult(0, "gaia-runner\n", "")
+            if cmd == ("inspect", "-f", "{{.State.Running}}", "gaia-runner"):
+                return CommandResult(0, "true\n", "")
+            if cmd == ("ps", "-a", "--filter", "status=created", "--filter", "status=exited", "--filter", "status=dead", "-q"):
+                return CommandResult(0, "\n".join(state["dead"]), "")
+            if cmd == ("ps", "-a", "--filter", "status=dead", "-q"):
+                return CommandResult(0, "\n".join(state["dead"]), "")
+            if cmd[:3] == ("rm", "-f", "-v"):
+                state["dead"] = []
+                return CommandResult(0, "", "")
+            return CommandResult(0, "", "")
 
-        docker_calls = self.docker_log.read_text(encoding="utf-8").splitlines()
-        self.assertNotIn("start gaia-runner", docker_calls)
-        self.assertIn("container prune -f", docker_calls)
-        self.assertIn("rm -f -v cid-dead-1 cid-dead-2", docker_calls)
-        self.assertIn("volume prune -f", docker_calls)
-
-        c_prune_idx = docker_calls.index("container prune -f")
-        rm_idx = docker_calls.index("rm -f -v cid-dead-1 cid-dead-2")
-        v_prune_idx = docker_calls.index("volume prune -f")
-        self.assertLess(c_prune_idx, rm_idx)
-        self.assertLess(rm_idx, v_prune_idx)
-        self.assertIn("Stopped/Dead Containers:   0", res.stdout)
+        buf = io.StringIO()
+        docker = FakeDockerPort(calls=self.calls, handler=docker_handler)
+        with contextlib.redirect_stdout(buf):
+            result = run_startup_orchestrator(
+                StartupContext(euid=0),
+                docker=docker,
+                clock=FakeClock(),
+            )
+        self.assertFalse(result.started_runner)
+        self.assertTrue(result.pruned_stopped_containers)
+        self.assertNotIn("docker start gaia-runner", self.calls)
+        self.assertLess(
+            self.calls.index("docker container prune -f"),
+            self.calls.index("docker rm -f -v cid-dead-1 cid-dead-2"),
+        )
+        self.assertLess(
+            self.calls.index("docker rm -f -v cid-dead-1 cid-dead-2"),
+            self.calls.index("docker volume prune -f"),
+        )
+        self.assertIn("Stopped/Dead Containers:   0", buf.getvalue())
 
     def test_no_stopped_containers_skips_pruning(self) -> None:
-        res = self._run_startup()
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        def docker_handler(cmd: tuple[str, ...]) -> CommandResult:
+            if cmd[:2] == ("service", "inspect"):
+                return CommandResult(1, "", "")
+            return CommandResult(0, "", "")
 
-        docker_calls = self.docker_log.read_text(encoding="utf-8").splitlines()
-        self.assertNotIn("container prune -f", docker_calls)
-        self.assertNotIn("volume prune -f", docker_calls)
-        self.assertFalse(any(c.startswith("rm ") for c in docker_calls))
-        self.assertIn("No dead/stopped containers found.", res.stdout)
+        buf = io.StringIO()
+        docker = FakeDockerPort(calls=self.calls, handler=docker_handler)
+        with contextlib.redirect_stdout(buf):
+            result = run_startup_orchestrator(
+                StartupContext(euid=0),
+                docker=docker,
+                clock=FakeClock(),
+            )
+        self.assertFalse(result.pruned_stopped_containers)
+        self.assertNotIn("docker container prune -f", self.calls)
+        self.assertNotIn("docker volume prune -f", self.calls)
+        self.assertFalse(any(c.startswith("docker rm ") for c in self.calls))
+        self.assertIn("No dead/stopped containers found.", buf.getvalue())
+
+
+class TestCleanupAndStartupShims(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-cleanup-shims-"))
+        self.mock_bin = self.tmpdir / "bin"
+        self.mock_bin.mkdir()
+        self.archive_tmp = self.tmpdir / "archive_tmp"
+        self.archive_tmp.mkdir()
+        self.py_log = self.tmpdir / "python.log"
+
+        mock_py = self.mock_bin / "python3"
+        mock_py.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "import yggdrasil_os\n"
+            f"with open({str(self.py_log)!r}, 'a', encoding='utf-8') as fh:\n"
+            "    fh.write(json.dumps({'argv': sys.argv[1:], 'module_file': yggdrasil_os.__file__}) + '\\n')\n",
+            encoding="utf-8",
+        )
+        mock_py.chmod(0o755)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_shims_allow_non_root_resolve_in_tree_and_clean_tarball_tmp(self) -> None:
+        for script, expected_cmd, extra_args in (
+            (STARTUP_SCRIPT, ["startup-orchestrator"], []),
+            (CLEANUP_SCRIPT, ["cleanup-storage"], ["--containers-only"]),
+        ):
+            with self.subTest(script=script.name):
+                mode = stat.S_IMODE(script.stat().st_mode)
+                self.assertEqual(mode & 0o111, 0o111)
+                self.assertEqual(mode & 0o002, 0)
+                self.py_log.unlink(missing_ok=True)
+                res = subprocess.run(
+                    ["bash", str(script), *extra_args],
+                    env={"PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin"},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+                entry = json.loads(self.py_log.read_text(encoding="utf-8").splitlines()[-1])
+                self.assertEqual(entry["argv"], ["-m", "yggdrasil_os", *expected_cmd, *extra_args])
+                self.assertEqual(
+                    Path(entry["module_file"]).resolve(),
+                    (REPO_ROOT / "yggdrasil_os" / "__init__.py").resolve(),
+                )
+
+        archive_path = self.tmpdir / "yggdrasil-os-main.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(REPO_ROOT / "yggdrasil_os", arcname="yggdrasil-os-main/yggdrasil_os")
+        detached = self.tmpdir / "cleanup_storage.sh"
+        shutil.copy2(CLEANUP_SCRIPT, detached)
+        detached.chmod(0o755)
+        res = subprocess.run(
+            ["bash", str(detached), "--bogus"],
+            env={
+                "PATH": f"{Path(sys.executable).parent}:/usr/local/bin:/usr/bin:/bin",
+                "TMPDIR": str(self.archive_tmp),
+                "YGGDRASIL_OS_ARCHIVE_URL": archive_path.as_uri(),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Unknown argument", res.stderr)
+        self.assertEqual(list(self.archive_tmp.iterdir()), [])
 
 
 if __name__ == "__main__":

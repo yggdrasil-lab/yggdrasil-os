@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
@@ -69,6 +70,26 @@ class AssetFetcher(Protocol):
 
     def fetch_bytes(self, rel_path: str) -> bytes:
         """Load asset bytes locally or remotely; fail loud on missing asset."""
+
+
+class Clock(Protocol):
+    """Port for monotonic time queries and sleep intervals."""
+
+    def monotonic(self) -> float:
+        """Return current monotonic timestamp in seconds."""
+
+    def sleep(self, seconds: float) -> None:
+        """Sleep for the requested duration in seconds."""
+
+
+class SystemClock:
+    """Production Clock backed by Python stdlib time."""
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
 
 
 class SubprocessCommandRunner:

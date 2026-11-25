@@ -1,182 +1,114 @@
 #!/usr/bin/env python3
-"""Unit tests for deploy/verify_convergence.sh."""
+"""Unit tests for post-deploy convergence verification (seam + shim smoke)."""
 
-import json
+from __future__ import annotations
+
+import contextlib
+import io
 import os
-import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+from typing import Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from yggdrasil_os import (  # noqa: E402
+    CommandResult,
+    ConvergenceConfigError,
+    ConvergenceFailureError,
+    cli,
+    parse_convergence_args,
+    verify_convergence,
+)
+
 VERIFY_SCRIPT = REPO_ROOT / "deploy" / "verify_convergence.sh"
 
-MOCK_DOCKER_PY = f"""#!{sys.executable}
-import json
-import os
-import sys
-from pathlib import Path
 
-state_dir = Path(os.environ["MOCK_STATE_DIR"])
-scenario = json.loads(Path(os.environ["MOCK_SCENARIO_FILE"]).read_text(encoding="utf-8"))
-calls_file = state_dir / "docker_calls.jsonl"
-args = sys.argv[1:]
-
-with calls_file.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps(args) + "\\n")
-
-def next_entry(key: str, entries: list[dict]) -> dict:
-    counter_file = state_dir / ("count_" + key.replace("/", "_") + ".txt")
-    idx = int(counter_file.read_text(encoding="utf-8")) if counter_file.exists() else 0
-    counter_file.write_text(str(idx + 1), encoding="utf-8")
-    return entries[min(idx, len(entries) - 1)]
-
-if len(args) >= 2 and args[0] == "service":
-    sub = args[1]
-    if sub == "ls":
-        if "--format" in args:
-            resp = next_entry("ls", scenario["ls"])
-            if resp.get("stdout"):
-                sys.stdout.write(resp["stdout"])
-            if resp.get("stderr"):
-                sys.stderr.write(resp["stderr"])
-            sys.exit(resp.get("rc", 0))
-        diag = scenario.get("diag_ls", "mystack_app 1/1\\n")
-        sys.stdout.write(diag)
-        sys.exit(0)
-
-    if sub == "inspect":
-        svc = args[2]
-        entries = scenario["inspect"][svc]
-        resp = next_entry(f"inspect_{{svc}}", entries)
-        if resp.get("stdout"):
-            sys.stdout.write(resp["stdout"])
-        if resp.get("stderr"):
-            sys.stderr.write(resp["stderr"])
-        sys.exit(resp.get("rc", 0))
-
-    if sub == "ps":
-        svc = args[2]
-        if "--format" in args:
-            entries = scenario["ps"][svc]
-            resp = next_entry(f"ps_{{svc}}", entries)
-            if resp.get("stdout"):
-                sys.stdout.write(resp["stdout"])
-            if resp.get("stderr"):
-                sys.stderr.write(resp["stderr"])
-            sys.exit(resp.get("rc", 0))
-        diag_ps = scenario.get("diag_ps", {{}}).get(svc, f"{{svc}} ps diag line\\n")
-        sys.stdout.write(diag_ps)
-        sys.exit(0)
-
-    if sub == "logs":
-        svc = args[-1]
-        diag_logs = scenario.get("diag_logs", {{}}).get(svc, f"crash log line for {{svc}}\\n")
-        sys.stdout.write(diag_logs)
-        sys.exit(0)
-
-sys.stderr.write(f"Unexpected docker args: {{args}}\\n")
-sys.exit(99)
-"""
-
-MOCK_DATE_PY = f"""#!{sys.executable}
-import os
-import sys
-from pathlib import Path
-
-state_dir = Path(os.environ["MOCK_STATE_DIR"])
-step = int(os.environ.get("MOCK_DATE_STEP", "0"))
-epoch_file = state_dir / "date_epoch.txt"
-if epoch_file.exists():
-    val = int(epoch_file.read_text(encoding="utf-8")) + step
-else:
-    val = int(os.environ.get("MOCK_DATE_START", "1000"))
-epoch_file.write_text(str(val), encoding="utf-8")
-print(val)
-"""
+def _ok(stdout: str = "") -> CommandResult:
+    return CommandResult(0, stdout, "")
 
 
-def _write_executable(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o755)
+def _err(stderr: str, rc: int = 1) -> CommandResult:
+    return CommandResult(rc, "", stderr)
 
 
-def _ok(stdout: str = "") -> dict:
-    return {"rc": 0, "stdout": stdout, "stderr": ""}
+class FakeClock:
+    """Deterministic monotonic clock recording sleep durations."""
+
+    def __init__(self, *, start: float = 1000.0, tick_on_monotonic: float = 0.0) -> None:
+        self.now = start
+        self.tick_on_monotonic = tick_on_monotonic
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        current = self.now
+        self.now += self.tick_on_monotonic
+        return current
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
-def _err(stderr: str, rc: int = 1) -> dict:
-    return {"rc": rc, "stdout": "", "stderr": stderr}
+class ScenarioDockerPort:
+    """Fake DockerPort replaying queued responses for service ls/inspect/ps/logs."""
 
+    def __init__(self, scenario: dict[str, object]) -> None:
+        self.scenario = scenario
+        self.calls: list[tuple[str, ...]] = []
+        self._counters: dict[str, int] = {}
 
-class _VerifyConvergenceBase(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-verify-convergence-"))
-        self.mock_bin = self.tmpdir / "bin"
-        self.state_dir = self.tmpdir / "state"
-        self.mock_bin.mkdir()
-        self.state_dir.mkdir()
-        self.scenario_file = self.tmpdir / "scenario.json"
-        self.sleep_log = self.state_dir / "sleep.log"
-        self.calls_file = self.state_dir / "docker_calls.jsonl"
-
-        _write_executable(self.mock_bin / "docker", MOCK_DOCKER_PY)
-        _write_executable(
-            self.mock_bin / "sleep",
-            "#!/usr/bin/env bash\n"
-            f'printf "%s\\n" "$*" >> "{self.sleep_log}"\n',
-        )
-
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def _install_mock_date(self, step: int = 1, start: int = 1000) -> dict[str, str]:
-        _write_executable(self.mock_bin / "date", MOCK_DATE_PY)
-        return {"MOCK_DATE_STEP": str(step), "MOCK_DATE_START": str(start)}
-
-    def _run_verify(
+    def run(
         self,
-        args: list[str],
-        scenario: dict | None = None,
-        extra_env: dict[str, str] | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        if scenario is not None:
-            self.scenario_file.write_text(json.dumps(scenario), encoding="utf-8")
-        env = {
-            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(self.tmpdir),
-            "MOCK_STATE_DIR": str(self.state_dir),
-            "MOCK_SCENARIO_FILE": str(self.scenario_file),
-        }
-        if extra_env:
-            env.update(extra_env)
-        return subprocess.run(
-            [str(VERIFY_SCRIPT), *args],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        args: Sequence[str],
+        *,
+        stdin_text: str | None = None,
+        timeout: float | None = None,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+        check: bool = False,
+    ) -> CommandResult:
+        cmd = tuple(args)
+        self.calls.append(cmd)
+        if len(cmd) >= 2 and cmd[0] == "service":
+            sub = cmd[1]
+            if sub == "ls":
+                if "--format" in cmd:
+                    return self._next("ls", self.scenario["ls"])  # type: ignore[arg-type]
+                return _ok(str(self.scenario.get("diag_ls", "mystack_app 1/1\n")))
+            if sub == "inspect":
+                svc = cmd[2]
+                inspect_map: dict[str, list[CommandResult]] = self.scenario["inspect"]  # type: ignore[assignment]
+                return self._next(f"inspect_{svc}", inspect_map[svc])
+            if sub == "ps":
+                svc = cmd[2]
+                if "--format" in cmd:
+                    ps_map: dict[str, list[CommandResult]] = self.scenario["ps"]  # type: ignore[assignment]
+                    return self._next(f"ps_{svc}", ps_map[svc])
+                diag_ps: dict[str, str] = self.scenario.get("diag_ps", {})  # type: ignore[assignment]
+                return _ok(diag_ps.get(svc, f"{svc} ps diag line\n"))
+            if sub == "logs":
+                svc = cmd[-1]
+                diag_logs: dict[str, str] = self.scenario.get("diag_logs", {})  # type: ignore[assignment]
+                return _ok(diag_logs.get(svc, f"crash log line for {svc}\n"))
+        return _err(f"Unexpected docker args: {cmd}", rc=99)
 
-    def _docker_calls(self) -> list[list[str]]:
-        if not self.calls_file.exists():
-            return []
-        lines = self.calls_file.read_text(encoding="utf-8").splitlines()
-        return [json.loads(line) for line in lines]
-
-    def _sleep_calls(self) -> list[str]:
-        if not self.sleep_log.exists():
-            return []
-        return self.sleep_log.read_text(encoding="utf-8").splitlines()
+    def _next(self, key: str, entries: list[CommandResult]) -> CommandResult:
+        idx = self._counters.get(key, 0)
+        self._counters[key] = idx + 1
+        return entries[min(idx, len(entries) - 1)]
 
 
-class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
+class TestVerifyConvergenceBehavior(unittest.TestCase):
     def test_bash_syntax_and_executable_mode(self) -> None:
         mode = stat.S_IMODE(VERIFY_SCRIPT.stat().st_mode)
         self.assertEqual(mode & 0o111, 0o111, f"{VERIFY_SCRIPT} must be executable")
+        self.assertEqual(mode & 0o002, 0, f"{VERIFY_SCRIPT} must not be world-writable")
         res = subprocess.run(
             ["bash", "-n", str(VERIFY_SCRIPT)],
             capture_output=True,
@@ -201,9 +133,7 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
                     _ok("completed\n"),
                     _ok("\n"),
                 ],
-                "mystack_worker": [
-                    _ok("completed\n"),
-                ],
+                "mystack_worker": [_ok("completed\n")],
             },
             "ps": {
                 "mystack_api": [
@@ -218,8 +148,7 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
                 ],
             },
         }
-
-        res = self._run_verify(
+        config = parse_convergence_args(
             [
                 "--timeout=60",
                 "--poll",
@@ -233,22 +162,27 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
                 "mystack_api",
                 "worker",
             ],
-            scenario=scenario,
+            env={},
         )
+        assert config is not None
+        docker = ScenarioDockerPort(scenario)
+        clock = FakeClock()
+        out, err = io.StringIO(), io.StringIO()
 
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        self.assertIn("Warning: docker service ls failed", res.stderr)
-        self.assertIn("Warning: docker service inspect failed", res.stderr)
-        self.assertIn("Warning: Service mystack_api update state is 'updating'", res.stderr)
-        self.assertIn("Warning: docker service ps failed for mystack_api", res.stderr)
-        self.assertNotIn("::error::", res.stderr + res.stdout)
+        result = verify_convergence(config, docker, clock, out=out, err=err)
+
+        self.assertEqual(result.stack_name, "mystack")
+        self.assertIn("Warning: docker service ls failed", err.getvalue())
+        self.assertIn("Warning: docker service inspect failed", err.getvalue())
+        self.assertIn("Warning: Service mystack_api update state is 'updating'", err.getvalue())
+        self.assertIn("Warning: docker service ps failed for mystack_api", err.getvalue())
+        self.assertNotIn("::error::", err.getvalue() + out.getvalue())
         self.assertIn(
             "Post-deploy Swarm convergence and stability verified for stack 'mystack'.",
-            res.stdout,
+            out.getvalue(),
         )
-        self.assertEqual(self._sleep_calls(), ["2", "2", "2", "2", "2", "4", "4"])
-        calls = self._docker_calls()
-        self.assertFalse(any(c[:2] == ["service", "logs"] for c in calls))
+        self.assertEqual(clock.sleeps, [2, 2, 2, 2, 2, 4, 4])
+        self.assertFalse(any(c[:2] == ("service", "logs") for c in docker.calls))
 
     def test_single_service_1_of_1_converges_cleanly_with_env_overrides(self) -> None:
         scenario = {
@@ -256,11 +190,9 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
             "inspect": {"solo_web": [_ok("\n")]},
             "ps": {"solo_web": [_ok("web_t1|Running 1 second ago|\n")]},
         }
-
-        res = self._run_verify(
+        config = parse_convergence_args(
             ["solo", "solo_web"],
-            scenario=scenario,
-            extra_env={
+            env={
                 "CONVERGENCE_TIMEOUT": "30",
                 "POLL_INTERVAL": "1",
                 "DWELL_CHECKS": "1",
@@ -268,11 +200,16 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
                 "LOG_TAIL": "25",
             },
         )
+        assert config is not None
+        docker = ScenarioDockerPort(scenario)
+        clock = FakeClock()
+        out, err = io.StringIO(), io.StringIO()
 
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        self.assertNotIn("::error::", res.stderr + res.stdout)
-        self.assertEqual(self._sleep_calls(), ["2"])
-        self.assertIn("Dwell check 1/1 passed", res.stdout)
+        verify_convergence(config, docker, clock, out=out, err=err)
+
+        self.assertNotIn("::error::", err.getvalue() + out.getvalue())
+        self.assertEqual(clock.sleeps, [2])
+        self.assertIn("Dwell check 1/1 passed", out.getvalue())
 
     def test_task_id_churn_during_dwell_fails_and_dumps_logs(self) -> None:
         scenario = {
@@ -287,87 +224,81 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
             },
             "diag_logs": {"mystack_worker": "worker OOMKilled backtrace\n"},
         }
-
-        res = self._run_verify(
+        config = parse_convergence_args(
             ["--dwell-checks", "2", "--dwell-interval", "3", "--log-tail", "45", "mystack", "worker"],
-            scenario=scenario,
+            env={},
         )
+        assert config is not None
+        docker = ScenarioDockerPort(scenario)
+        clock = FakeClock()
+        out, err = io.StringIO(), io.StringIO()
 
-        self.assertEqual(res.returncode, 1)
-        self.assertIn("::error::Task ID churn detected for mystack_worker during dwell check 2/2", res.stderr)
-        self.assertIn("worker OOMKilled backtrace", res.stderr)
-        calls = self._docker_calls()
-        self.assertIn(["service", "ls", "--filter", "name=mystack_"], calls)
-        self.assertIn(["service", "ps", "mystack_worker", "--no-trunc"], calls)
-        self.assertIn(["service", "logs", "--tail", "45", "mystack_worker"], calls)
+        with self.assertRaises(ConvergenceFailureError):
+            verify_convergence(config, docker, clock, out=out, err=err)
+
+        self.assertIn("::error::Task ID churn detected for mystack_worker during dwell check 2/2", err.getvalue())
+        self.assertIn("worker OOMKilled backtrace", err.getvalue())
+        self.assertIn(("service", "ls", "--filter", "name=mystack_"), docker.calls)
+        self.assertIn(("service", "ps", "mystack_worker", "--no-trunc"), docker.calls)
+        self.assertIn(("service", "logs", "--tail", "45", "mystack_worker"), docker.calls)
 
     def test_non_running_transition_and_task_error_during_dwell_fail_with_diagnostics(self) -> None:
         cases = [
-            (
-                "non_running_state",
-                _ok("t1|Failed 1 second ago|exit 137\n"),
-                "is not Running",
-            ),
-            (
-                "non_empty_task_error",
-                _ok("t1|Running 8 seconds ago|healthcheck failed\n"),
-                "reported error: healthcheck failed",
-            ),
-            (
-                "replica_count_drop",
-                _ok(""),
-                "has 0 running task(s) (expected 1)",
-            ),
+            ("non_running_state", _ok("t1|Failed 1 second ago|exit 137\n"), "is not Running"),
+            ("non_empty_task_error", _ok("t1|Running 8 seconds ago|healthcheck failed\n"), "reported error: healthcheck failed"),
+            ("replica_count_drop", _ok(""), "has 0 running task(s) (expected 1)"),
         ]
         for label, dwell_ps, expected_msg in cases:
             with self.subTest(case=label):
-                for p in self.state_dir.glob("*"):
-                    p.unlink()
                 scenario = {
                     "ls": [_ok("mystack_api|1/1\n")],
                     "inspect": {"mystack_api": [_ok("\n")]},
                     "ps": {"mystack_api": [_ok("t1|Running 2s|\n"), dwell_ps]},
                     "diag_logs": {"mystack_api": f"diag log for {label}\n"},
                 }
-
-                res = self._run_verify(
+                config = parse_convergence_args(
                     ["--dwell-checks", "1", "--dwell-interval", "2", "--log-tail", "20", "mystack", "api"],
-                    scenario=scenario,
+                    env={},
                 )
+                assert config is not None
+                docker = ScenarioDockerPort(scenario)
+                clock = FakeClock()
+                out, err = io.StringIO(), io.StringIO()
 
-                self.assertEqual(res.returncode, 1)
-                self.assertIn("::error::Stability dwell check 1/1 failed for mystack_api", res.stderr)
-                self.assertIn(expected_msg, res.stderr)
-                self.assertIn(f"diag log for {label}", res.stderr)
-                self.assertIn(["service", "logs", "--tail", "20", "mystack_api"], self._docker_calls())
+                with self.assertRaises(ConvergenceFailureError):
+                    verify_convergence(config, docker, clock, out=out, err=err)
+
+                self.assertIn("::error::Stability dwell check 1/1 failed for mystack_api", err.getvalue())
+                self.assertIn(expected_msg, err.getvalue())
+                self.assertIn(f"diag log for {label}", err.getvalue())
+                self.assertIn(("service", "logs", "--tail", "20", "mystack_api"), docker.calls)
 
     def test_abnormal_update_state_fails_immediately_before_timeout(self) -> None:
         for bad_state in ("paused", "rollback_started", "rollback_completed"):
             with self.subTest(state=bad_state):
-                for p in self.state_dir.glob("*"):
-                    p.unlink()
                 scenario = {
                     "ls": [_ok("mystack_api|0/1\n")],
                     "inspect": {"mystack_api": [_ok(f"{bad_state}\n")]},
                     "ps": {"mystack_api": [_ok("")]},
                     "diag_logs": {"mystack_api": f"rollback log {bad_state}\n"},
                 }
+                config = parse_convergence_args(["--timeout", "120", "--poll", "5", "mystack", "api"], env={})
+                assert config is not None
+                docker = ScenarioDockerPort(scenario)
+                clock = FakeClock()
+                err = io.StringIO()
 
-                res = self._run_verify(
-                    ["--timeout", "120", "--poll", "5", "mystack", "api"],
-                    scenario=scenario,
-                )
+                with self.assertRaises(ConvergenceFailureError):
+                    verify_convergence(config, docker, clock, out=io.StringIO(), err=err)
 
-                self.assertEqual(res.returncode, 1)
                 self.assertIn(
                     f"::error::Service mystack_api entered abnormal Swarm update state '{bad_state}'.",
-                    res.stderr,
+                    err.getvalue(),
                 )
-                self.assertIn(f"rollback log {bad_state}", res.stderr)
-                self.assertEqual(self._sleep_calls(), [])
+                self.assertIn(f"rollback log {bad_state}", err.getvalue())
+                self.assertEqual(clock.sleeps, [])
 
     def test_convergence_timeout_fails_loudly_with_diagnostics(self) -> None:
-        date_env = self._install_mock_date(step=2, start=1000)
         scenario = {
             "ls": [_ok("mystack_api|0/1\n")],
             "inspect": {"mystack_api": [_ok("updating\n")]},
@@ -376,31 +307,29 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
             "diag_ps": {"mystack_api": "t_bad Pending No suitable node\n"},
             "diag_logs": {"mystack_api": "startup timeout log line\n"},
         }
-
-        res = self._run_verify(
+        config = parse_convergence_args(
             ["mystack", "api"],
-            scenario=scenario,
-            extra_env={
-                **date_env,
-                "CONVERGENCE_TIMEOUT": "3",
-                "POLL_INTERVAL": "1",
-                "LOG_TAIL": "15",
-            },
+            env={"CONVERGENCE_TIMEOUT": "3", "POLL_INTERVAL": "1", "LOG_TAIL": "15"},
         )
+        assert config is not None
+        docker = ScenarioDockerPort(scenario)
+        clock = FakeClock(start=1000.0, tick_on_monotonic=2.0)
+        err = io.StringIO()
 
-        self.assertEqual(res.returncode, 1)
+        with self.assertRaises(ConvergenceFailureError):
+            verify_convergence(config, docker, clock, out=io.StringIO(), err=err)
+
         self.assertIn(
             "::error::Post-deploy convergence timed out after 3s for stack 'mystack' (mystack_api).",
-            res.stderr,
+            err.getvalue(),
         )
-        self.assertIn("t_bad Pending No suitable node", res.stderr)
-        self.assertIn("startup timeout log line", res.stderr)
-        calls = self._docker_calls()
-        self.assertIn(["service", "ls", "--filter", "name=mystack_"], calls)
-        self.assertIn(["service", "ps", "mystack_api", "--no-trunc"], calls)
-        self.assertIn(["service", "logs", "--tail", "15", "mystack_api"], calls)
+        self.assertIn("t_bad Pending No suitable node", err.getvalue())
+        self.assertIn("startup timeout log line", err.getvalue())
+        self.assertIn(("service", "ls", "--filter", "name=mystack_"), docker.calls)
+        self.assertIn(("service", "ps", "mystack_api", "--no-trunc"), docker.calls)
+        self.assertIn(("service", "logs", "--tail", "15", "mystack_api"), docker.calls)
 
-    def test_cli_validation_fails_loudly_on_invalid_flags_values_and_positionals(self) -> None:
+    def test_cli_validation_fails_loudly_with_exit_1_on_invalid_flags_values_and_positionals(self) -> None:
         invalid_cases = [
             ("no_args", [], None),
             ("missing_service", ["mystack"], None),
@@ -420,10 +349,29 @@ class TestVerifyConvergenceBehavior(_VerifyConvergenceBase):
 
         for label, cli_args, env_overrides in invalid_cases:
             with self.subTest(case=label):
-                self.calls_file.unlink(missing_ok=True)
-                res = self._run_verify(cli_args, extra_env=env_overrides)
-                self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
-                self.assertEqual(self._docker_calls(), [])
+                with self.assertRaises(ConvergenceConfigError):
+                    parse_convergence_args(cli_args, env=env_overrides or {})
+
+                old_env = os.environ.copy()
+                try:
+                    if env_overrides:
+                        os.environ.update(env_overrides)
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        rc = cli.main(["verify-convergence", *cli_args])
+                    self.assertEqual(rc, 1)
+                finally:
+                    os.environ.clear()
+                    os.environ.update(old_env)
+
+    def test_shim_help_exits_zero_via_subprocess(self) -> None:
+        res = subprocess.run(
+            ["bash", str(VERIFY_SCRIPT), "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Usage: verify_convergence.sh", res.stdout)
 
 
 if __name__ == "__main__":

@@ -1,47 +1,42 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
+# Yggdrasil OS - Versioned Swarm Secret Creator (Zero-Clone Shim)
 # Usage: echo "secret_content" | ./ensure_secret.sh <SECRET_BASE_NAME>
-# Example: echo "super_secret" | ./ensure_secret.sh "cerberus_admin_token"
-# Output: cerberus_admin_token_<hash>
 
-SECRET_BASE_NAME="$1"
-
-if [ -z "$SECRET_BASE_NAME" ]; then
-    echo "Error: Secret base name is required." >&2
-    echo "Usage: echo \"content\" | ./ensure_secret.sh <SECRET_BASE_NAME>" >&2
-    exit 1
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 fi
 
-# Read secret content from stdin
-SECRET_CONTENT=$(cat)
+RUN_ROOT=""
+TMP_DIR=""
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
+    fi
+}
+trap cleanup_tmp_dir EXIT
 
-if [ -z "$SECRET_CONTENT" ]; then
-    echo "Error: Secret content must be provided via stdin." >&2
-    exit 1
-fi
-
-# Calculate MD5 hash of the content (first 8 chars)
-# standardizing on md5sum (Linux) or md5 (BSD/Mac)
-if command -v md5sum >/dev/null 2>&1; then
-    HASH=$(echo -n "$SECRET_CONTENT" | md5sum | cut -d' ' -f1 | head -c 8)
-elif command -v md5 >/dev/null 2>&1; then
-    HASH=$(echo -n "$SECRET_CONTENT" | md5 | head -c 8)
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../yggdrasil_os/__init__.py" ]; then
+    RUN_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+elif [ -n "${YGGDRASIL_OS_ROOT:-}" ]; then
+    if [ ! -f "${YGGDRASIL_OS_ROOT}/yggdrasil_os/__init__.py" ]; then
+        echo "Error: YGGDRASIL_OS_ROOT=${YGGDRASIL_OS_ROOT} does not contain yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="${YGGDRASIL_OS_ROOT}"
 else
-    echo "Error: neither md5sum nor md5 found." >&2
-    exit 1
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_URL="${YGGDRASIL_OS_ARCHIVE_URL:-https://github.com/yggdrasil-lab/yggdrasil-os/archive/refs/heads/${YGGDRASIL_OS_REF:-main}.tar.gz}"
+    curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/yggdrasil-os.tar.gz"
+    tar -xzf "${TMP_DIR}/yggdrasil-os.tar.gz" -C "${TMP_DIR}"
+    INIT_PATH="$(find "${TMP_DIR}" -maxdepth 3 -path "*/yggdrasil_os/__init__.py" | head -n 1 || true)"
+    if [ -z "${INIT_PATH}" ]; then
+        echo "Error: Downloaded archive from ${ARCHIVE_URL} lacks yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="$(cd "$(dirname "${INIT_PATH}")/.." >/dev/null 2>&1 && pwd)"
 fi
 
-FULL_SECRET_NAME="${SECRET_BASE_NAME}_${HASH}"
-
-# Check if secret already exists
-if docker secret inspect "$FULL_SECRET_NAME" >/dev/null 2>&1; then
-    # Secret exists, nothing to do
-    :
-else
-    # Create the secret
-    printf "%s" "$SECRET_CONTENT" | docker secret create "$FULL_SECRET_NAME" - >/dev/null
-fi
-
-# Output only the name to stdout so it can be captured
-echo "$FULL_SECRET_NAME"
+PYTHONPATH="${RUN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m yggdrasil_os ensure-secret "$@"

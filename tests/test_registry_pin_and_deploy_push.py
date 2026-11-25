@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit and integration tests for registry host pinning and deploy push dedup."""
 
+import io
 import json
 import os
 import shutil
@@ -10,10 +11,18 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from yggdrasil_os import (  # noqa: E402
+    CommandResult,
+    DeployConfig,
+    ReportedCommandError,
+    deploy_stack,
+)
 PIN_SCRIPT = REPO_ROOT / "network" / "pin_registry_host.sh"
 DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "deploy.sh"
 SETUP_GAIA_SCRIPT = REPO_ROOT / "hosts" / "setup_gaia.sh"
@@ -333,115 +342,123 @@ class TestPinRegistryHost(unittest.TestCase):
                 self.assertEqual(self.hosts_file.read_text(encoding="utf-8"), original)
 
 
+class _DeployFakeClock:
+    def __init__(self) -> None:
+        self.sleeps: list[float] = []
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class _DeployFakeDocker:
+    def __init__(
+        self,
+        *,
+        compose_json: str = "",
+        push_failures_remaining: int = 0,
+        deploy_failures_remaining: int = 0,
+        deploy_fail_msg: str = "",
+        deploy_fail_rc: int = 1,
+        real_docker_for_config: bool = False,
+    ) -> None:
+        self.compose_json = compose_json
+        self.push_failures_remaining = push_failures_remaining
+        self.deploy_failures_remaining = deploy_failures_remaining
+        self.deploy_fail_msg = deploy_fail_msg
+        self.deploy_fail_rc = deploy_fail_rc
+        self.real_docker_for_config = real_docker_for_config
+        self.pushed: list[str] = []
+        self.stack_cmds: list[str] = []
+        self.stack_env_tags: list[str] = []
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        stdin_text: str | None = None,
+        timeout: float | None = None,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+        check: bool = False,
+    ) -> CommandResult:
+        cmd = tuple(args)
+        self.calls.append(cmd)
+        if cmd[0] == "compose":
+            if "config" in cmd:
+                if self.real_docker_for_config:
+                    real_docker = shutil.which("docker") or "/usr/bin/docker"
+                    merged_env = {**os.environ, **env} if env is not None else None
+                    proc = subprocess.run(
+                        [real_docker, *cmd],
+                        cwd=str(cwd) if cwd is not None else None,
+                        env=merged_env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    return CommandResult(proc.returncode, proc.stdout, proc.stderr)
+                return CommandResult(0, self.compose_json, "")
+            return CommandResult(0, "", "")
+        if cmd[0] == "push":
+            self.pushed.append(cmd[1])
+            if self.push_failures_remaining > 0:
+                self.push_failures_remaining -= 1
+                return CommandResult(1, "", f"push error for {cmd[1]}")
+            return CommandResult(0, "", "")
+        if cmd[0] == "stack":
+            self.stack_cmds.append(" ".join(cmd[1:]))
+            if cmd[1] == "deploy":
+                self.stack_env_tags.append((env or {}).get("IMAGE_TAG", ""))
+                if self.deploy_failures_remaining > 0:
+                    self.deploy_failures_remaining -= 1
+                    return CommandResult(self.deploy_fail_rc, "", self.deploy_fail_msg)
+                return CommandResult(0, "Updating service teststack_app\n", "")
+            return CommandResult(0, "", "")
+        return CommandResult(0, "", "")
+
+
 class TestDeployPushDedupAndRetry(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp(prefix="test-deploy-push-"))
-        self.mock_bin = self.tmpdir / "bin"
-        self.mock_bin.mkdir()
         self.work_dir = self.tmpdir / "stack"
         self.work_dir.mkdir()
-        self.push_log = self.tmpdir / "push.log"
-        self.sleep_log = self.tmpdir / "sleep.log"
-        self.stack_env_log = self.tmpdir / "stack_env.log"
-        self.stack_cmd_log = self.tmpdir / "stack_cmd.log"
-        self.compose_json_file = self.tmpdir / "compose.json"
-        self.fail_count_file = self.tmpdir / "fail_count.txt"
-        self.stack_deploy_fail_count_file = self.tmpdir / "stack_deploy_fail_count.txt"
-        self.stack_deploy_fail_msg_file = self.tmpdir / "stack_deploy_fail_msg.txt"
-        self.stack_deploy_fail_rc_file = self.tmpdir / "stack_deploy_fail_rc.txt"
-
-        _write_executable(
-            self.mock_bin / "sleep",
-            "#!/usr/bin/env bash\n"
-            f"echo \"$*\" >> {self.sleep_log}\n",
-        )
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _install_mock_docker(self, real_docker_for_config: bool = False) -> None:
-        real_docker = shutil.which("docker") or "/usr/bin/docker"
-        config_branch = (
-            f"    exec \"{real_docker}\" \"$@\"\n"
-            if real_docker_for_config
-            else f"    cat {self.compose_json_file}\n    exit 0\n"
-        )
-        script = (
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            "cmd=\"${1:-}\"\n"
-            "if [ \"$cmd\" = \"compose\" ]; then\n"
-            "  for arg in \"$@\"; do\n"
-            "    if [ \"$arg\" = \"config\" ]; then\n"
-            f"{config_branch}"
-            "    fi\n"
-            "  done\n"
-            "  exit 0\n"
-            "elif [ \"$cmd\" = \"push\" ]; then\n"
-            "  img=\"${2:-}\"\n"
-            f"  echo \"$img\" >> {self.push_log}\n"
-            f"  if [ -f {self.fail_count_file} ]; then\n"
-            f"    rem=$(cat {self.fail_count_file})\n"
-            "    if [ \"$rem\" -gt 0 ]; then\n"
-            f"      echo $((rem - 1)) > {self.fail_count_file}\n"
-            "      exit 1\n"
-            "    fi\n"
-            "  fi\n"
-            "  exit 0\n"
-            "elif [ \"$cmd\" = \"stack\" ]; then\n"
-            "  shift\n"
-            f"  echo \"$*\" >> {self.stack_cmd_log}\n"
-            "  subcmd=\"${1:-}\"\n"
-            "  if [ \"$subcmd\" = \"deploy\" ]; then\n"
-            f"    echo \"IMAGE_TAG=${{IMAGE_TAG:-}}\" >> {self.stack_env_log}\n"
-            f"    if [ -f {self.stack_deploy_fail_count_file} ]; then\n"
-            f"      rem=$(cat {self.stack_deploy_fail_count_file})\n"
-            "      if [ \"$rem\" -gt 0 ]; then\n"
-            f"        echo $((rem - 1)) > {self.stack_deploy_fail_count_file}\n"
-            f"        if [ -f {self.stack_deploy_fail_msg_file} ]; then\n"
-            f"          cat {self.stack_deploy_fail_msg_file} >&2\n"
-            "        fi\n"
-            "        rc=1\n"
-            f"        if [ -f {self.stack_deploy_fail_rc_file} ]; then\n"
-            f"          rc=$(cat {self.stack_deploy_fail_rc_file})\n"
-            "        fi\n"
-            "        exit \"$rc\"\n"
-            "      fi\n"
-            "    fi\n"
-            "    echo \"Updating service teststack_app\"\n"
-            "  fi\n"
-            "  exit 0\n"
-            "elif [ \"$cmd\" = \"service\" ] || [ \"$cmd\" = \"ps\" ] || [ \"$cmd\" = \"network\" ] || [ \"$cmd\" = \"secret\" ]; then\n"
-            "  exit 0\n"
-            "fi\n"
-            "exit 0\n"
-        )
-        _write_executable(self.mock_bin / "docker", script)
-
     def _run_deploy(
         self,
+        docker: _DeployFakeDocker,
+        *,
         extra_env: dict[str, str] | None = None,
         compose_path: str = "docker-compose.yml",
         stack_name: str = "teststack",
-        extra_args: list[str] | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        env = {
-            "PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(self.tmpdir),
-            "REGISTRY_PREFIX": "registry.example.test/",
-            "GIT_DIR": str(self.tmpdir / ".nonexistent-git"),
-        }
+        skip_build: bool = False,
+        recreate: bool = False,
+    ) -> tuple[int, str, str, _DeployFakeClock]:
+        env = {"REGISTRY_PREFIX": "registry.example.test/"}
         if extra_env:
             env.update(extra_env)
-        cmd = ["bash", str(DEPLOY_SCRIPT), *(extra_args or []), stack_name, compose_path]
-        return subprocess.run(
-            cmd,
-            cwd=str(self.work_dir),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
+        clock = _DeployFakeClock()
+        out, err = io.StringIO(), io.StringIO()
+        cfg = DeployConfig(
+            stack_name=stack_name,
+            compose_files=(Path(compose_path),),
+            skip_build=skip_build,
+            recreate=recreate,
+            work_dir=self.work_dir,
         )
+        try:
+            deploy_stack(cfg, docker, clock, env=env, out=out, err=err)
+            return 0, out.getvalue(), err.getvalue(), clock
+        except ReportedCommandError as exc:
+            return exc.returncode, out.getvalue(), err.getvalue(), clock
 
     def test_dedup_excludes_non_build_services_and_preserves_order(self) -> None:
         mock_compose = {
@@ -466,14 +483,11 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
                 },
             }
         }
-        self.compose_json_file.write_text(json.dumps(mock_compose), encoding="utf-8")
-        self._install_mock_docker()
-
-        res = self._run_deploy()
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        pushed = self.push_log.read_text(encoding="utf-8").splitlines()
+        docker = _DeployFakeDocker(compose_json=json.dumps(mock_compose))
+        rc, out, err, _ = self._run_deploy(docker)
+        self.assertEqual(rc, 0, err + out)
         self.assertEqual(
-            pushed,
+            docker.pushed,
             [
                 "registry.example.test/hermes-agent:odin",
                 "registry.example.test/jev-shim:odin",
@@ -488,13 +502,11 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
                 "postgres": {"image": "postgres:16-alpine"},
             }
         }
-        self.compose_json_file.write_text(json.dumps(mock_compose), encoding="utf-8")
-        self._install_mock_docker()
-
-        res = self._run_deploy()
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        self.assertIn("No built images to push.", res.stdout)
-        self.assertFalse(self.push_log.exists())
+        docker = _DeployFakeDocker(compose_json=json.dumps(mock_compose))
+        rc, out, err, _ = self._run_deploy(docker)
+        self.assertEqual(rc, 0, err + out)
+        self.assertIn("No built images to push.", out)
+        self.assertEqual(docker.pushed, [])
 
     def test_push_retry_fails_twice_then_succeeds_on_third(self) -> None:
         mock_compose = {
@@ -505,23 +517,18 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
                 }
             }
         }
-        self.compose_json_file.write_text(json.dumps(mock_compose), encoding="utf-8")
-        self.fail_count_file.write_text("2", encoding="utf-8")
-        self._install_mock_docker()
-
-        res = self._run_deploy()
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        pushed = self.push_log.read_text(encoding="utf-8").splitlines()
+        docker = _DeployFakeDocker(compose_json=json.dumps(mock_compose), push_failures_remaining=2)
+        rc, out, err, clock = self._run_deploy(docker)
+        self.assertEqual(rc, 0, err + out)
         self.assertEqual(
-            pushed,
+            docker.pushed,
             [
                 "registry.example.test/app:latest",
                 "registry.example.test/app:latest",
                 "registry.example.test/app:latest",
             ],
         )
-        sleeps = self.sleep_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(sleeps, ["5", "10"])
+        self.assertEqual(clock.sleeps, [5, 10])
 
     def test_push_retry_exhausted_exits_nonzero(self) -> None:
         mock_compose = {
@@ -532,17 +539,12 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
                 }
             }
         }
-        self.compose_json_file.write_text(json.dumps(mock_compose), encoding="utf-8")
-        self.fail_count_file.write_text("3", encoding="utf-8")
-        self._install_mock_docker()
-
-        res = self._run_deploy()
-        self.assertNotEqual(res.returncode, 0)
-        self.assertIn("Failed to push registry.example.test/app:latest after 3 attempts", res.stderr)
-        pushed = self.push_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(pushed), 3)
-        sleeps = self.sleep_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(sleeps, ["5", "10"])
+        docker = _DeployFakeDocker(compose_json=json.dumps(mock_compose), push_failures_remaining=3)
+        rc, _, err, clock = self._run_deploy(docker)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("Failed to push registry.example.test/app:latest after 3 attempts", err)
+        self.assertEqual(len(docker.pushed), 3)
+        self.assertEqual(clock.sleeps, [5, 10])
 
     def test_live_odin_compose_extracts_hermes_once(self) -> None:
         odin_compose = _find_odin_compose()
@@ -562,7 +564,7 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
                 "Odin docker-compose.yml, docker binary, or docker-compose-plugin not present"
             )
 
-        self._install_mock_docker(real_docker_for_config=True)
+        docker = _DeployFakeDocker(real_docker_for_config=True)
         dummy_env = {
             "STACK_NAME": "odin",
             "REGISTRY_PREFIX": "registry.example.invalid/",
@@ -603,16 +605,16 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             "WEBUI_SECRET_KEY_NAME": "s3",
             "HERMES_CONFIG_SHA": "testsha",
         }
-        res = self._run_deploy(
+        rc, out, err, _ = self._run_deploy(
+            docker,
             extra_env=dummy_env,
             compose_path=str(odin_compose),
             stack_name="odin",
         )
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        pushed = self.push_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(pushed.count("registry.example.invalid/hermes-agent:odin"), 1)
+        self.assertEqual(rc, 0, err + out)
+        self.assertEqual(docker.pushed.count("registry.example.invalid/hermes-agent:odin"), 1)
         self.assertEqual(
-            set(pushed),
+            set(docker.pushed),
             {
                 "registry.example.invalid/hermes-agent:odin",
                 "registry.example.invalid/jev-shim:odin",
@@ -620,7 +622,7 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
             },
         )
         for excluded in ["postgres", "ollama", "searxng", "muninn", "open-webui"]:
-            for item in pushed:
+            for item in docker.pushed:
                 self.assertNotIn(excluded, item)
 
     def test_push_loop_preserves_exported_image_tag_for_stack_deploy(self) -> None:
@@ -632,40 +634,30 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
                 }
             }
         }
-        self.compose_json_file.write_text(json.dumps(mock_compose), encoding="utf-8")
-        self._install_mock_docker()
-
-        res = self._run_deploy(extra_env={"IMAGE_TAG": "storybook"}, stack_name="ui")
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        pushed = self.push_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(pushed, ["registry.example.test/ui-storybook:storybook"])
-        self.assertEqual(
-            self.stack_env_log.read_text(encoding="utf-8").strip(),
-            "IMAGE_TAG=storybook",
-        )
+        docker = _DeployFakeDocker(compose_json=json.dumps(mock_compose))
+        rc, out, err, _ = self._run_deploy(docker, extra_env={"IMAGE_TAG": "storybook"}, stack_name="ui")
+        self.assertEqual(rc, 0, err + out)
+        self.assertEqual(docker.pushed, ["registry.example.test/ui-storybook:storybook"])
+        self.assertEqual(docker.stack_env_tags, ["storybook"])
 
     def test_default_deploy_is_in_place_without_stack_rm(self) -> None:
-        self._install_mock_docker()
-
-        res = self._run_deploy(extra_args=["--skip-build"])
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(stack_cmds), 1)
-        self.assertFalse(any(cmd.startswith("rm ") for cmd in stack_cmds))
+        docker = _DeployFakeDocker()
+        rc, out, err, _ = self._run_deploy(docker, skip_build=True)
+        self.assertEqual(rc, 0, err + out)
+        self.assertEqual(len(docker.stack_cmds), 1)
+        self.assertFalse(any(cmd.startswith("rm ") for cmd in docker.stack_cmds))
         self.assertEqual(
-            stack_cmds[0],
+            docker.stack_cmds[0],
             "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
         )
-        self.assertIn("Updating service teststack_app", res.stdout)
+        self.assertIn("Updating service teststack_app", out)
 
     def test_recreate_flag_calls_stack_rm_before_deploy(self) -> None:
-        self._install_mock_docker()
-
-        res = self._run_deploy(extra_args=["--skip-build", "--recreate"])
-        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+        docker = _DeployFakeDocker()
+        rc, out, err, _ = self._run_deploy(docker, skip_build=True, recreate=True)
+        self.assertEqual(rc, 0, err + out)
         self.assertEqual(
-            stack_cmds,
+            docker.stack_cmds,
             [
                 "rm teststack",
                 "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
@@ -673,7 +665,6 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         )
 
     def test_immutable_config_error_falls_back_to_recreate_and_succeeds(self) -> None:
-        self._install_mock_docker()
         messages = [
             "Error response from daemon: rpc error: code = InvalidArgument desc = only updates to Labels are allowed",
             "failed to update config odin_hermes_cfg_abc123",
@@ -685,15 +676,11 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         ]
         for msg in messages:
             with self.subTest(msg=msg):
-                self.stack_cmd_log.unlink(missing_ok=True)
-                self.stack_deploy_fail_count_file.write_text("1", encoding="utf-8")
-                self.stack_deploy_fail_msg_file.write_text(f"{msg}\n", encoding="utf-8")
-
-                res = self._run_deploy(extra_args=["--skip-build"])
-                self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
-                stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+                docker = _DeployFakeDocker(deploy_failures_remaining=1, deploy_fail_msg=f"{msg}\n")
+                rc, out, err, _ = self._run_deploy(docker, skip_build=True)
+                self.assertEqual(rc, 0, err + out)
                 self.assertEqual(
-                    stack_cmds,
+                    docker.stack_cmds,
                     [
                         "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
                         "rm teststack",
@@ -702,24 +689,20 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
                 )
                 self.assertIn(
                     "Warning: In-place deploy rejected due to immutable Swarm config/spec change; falling back to stack recreate for teststack...",
-                    res.stderr,
+                    err,
                 )
-                self.assertIn(msg, res.stderr)
+                self.assertIn(msg, err)
 
     def test_immutable_fallback_retry_failure_exits_nonzero(self) -> None:
-        self._install_mock_docker()
-        self.stack_deploy_fail_count_file.write_text("2", encoding="utf-8")
-        self.stack_deploy_fail_msg_file.write_text(
-            "only updates to Labels are allowed\n",
-            encoding="utf-8",
+        docker = _DeployFakeDocker(
+            deploy_failures_remaining=2,
+            deploy_fail_msg="only updates to Labels are allowed\n",
+            deploy_fail_rc=3,
         )
-        self.stack_deploy_fail_rc_file.write_text("3", encoding="utf-8")
-
-        res = self._run_deploy(extra_args=["--skip-build"])
-        self.assertEqual(res.returncode, 3)
-        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+        rc, _, _, _ = self._run_deploy(docker, skip_build=True)
+        self.assertEqual(rc, 3)
         self.assertEqual(
-            stack_cmds,
+            docker.stack_cmds,
             [
                 "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
                 "rm teststack",
@@ -728,26 +711,22 @@ class TestDeployPushDedupAndRetry(unittest.TestCase):
         )
 
     def test_non_immutable_deploy_failure_exits_original_code_without_stack_rm(self) -> None:
-        self._install_mock_docker()
-        self.stack_deploy_fail_count_file.write_text("1", encoding="utf-8")
-        self.stack_deploy_fail_msg_file.write_text(
-            "network aether-net not found\n",
-            encoding="utf-8",
+        docker = _DeployFakeDocker(
+            deploy_failures_remaining=1,
+            deploy_fail_msg="network aether-net not found\n",
+            deploy_fail_rc=2,
         )
-        self.stack_deploy_fail_rc_file.write_text("2", encoding="utf-8")
-
-        res = self._run_deploy(extra_args=["--skip-build"])
-        self.assertEqual(res.returncode, 2)
-        stack_cmds = self.stack_cmd_log.read_text(encoding="utf-8").splitlines()
+        rc, _, err, _ = self._run_deploy(docker, skip_build=True)
+        self.assertEqual(rc, 2)
         self.assertEqual(
-            stack_cmds,
+            docker.stack_cmds,
             [
                 "deploy --with-registry-auth --prune --resolve-image always -c docker-compose.yml teststack",
             ],
         )
-        self.assertFalse(any(cmd.startswith("rm ") for cmd in stack_cmds))
-        self.assertIn("network aether-net not found", res.stderr)
-        self.assertNotIn("falling back to stack recreate", res.stderr)
+        self.assertFalse(any(cmd.startswith("rm ") for cmd in docker.stack_cmds))
+        self.assertIn("network aether-net not found", err)
+        self.assertNotIn("falling back to stack recreate", err)
 
 
 class TestKanbanDecommissionGuards(unittest.TestCase):
@@ -781,15 +760,17 @@ class TestKanbanDecommissionGuards(unittest.TestCase):
             )
 
     def test_deploy_omits_kanban_auto_sync_for_kb_refs(self) -> None:
-        deploy_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-        for retired in (
-            "Kanban Auto-Sync",
-            "kanban-gateway",
-            "kanban_jev_gateway.py",
-            "KANBAN_DISCORD_CHANNEL_ID",
-            "/opt/odin/hermes/kanban.db",
-        ):
-            self.assertNotIn(retired, deploy_text, f"{retired!r} must not remain in deploy.sh")
+        deploy_shim_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        deploy_py_text = (REPO_ROOT / "yggdrasil_os" / "deploy.py").read_text(encoding="utf-8")
+        for label, text in (("deploy.sh", deploy_shim_text), ("yggdrasil_os/deploy.py", deploy_py_text)):
+            for retired in (
+                "Kanban Auto-Sync",
+                "kanban-gateway",
+                "kanban_jev_gateway.py",
+                "KANBAN_DISCORD_CHANNEL_ID",
+                "/opt/odin/hermes/kanban.db",
+            ):
+                self.assertNotIn(retired, text, f"{retired!r} must not remain in {label}")
 
         self._install_fail_on_kanban_mocks()
         env = {"PATH": f"{self.mock_bin}:/usr/local/bin:/usr/bin:/bin", "HOME": str(self.tmpdir)}

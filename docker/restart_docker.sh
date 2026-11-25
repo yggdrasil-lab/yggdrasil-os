@@ -1,66 +1,47 @@
-#!/bin/bash
-# docker/restart_docker.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# docker/restart_docker.sh (Zero-Clone Shim)
 # Gracefully restarts Docker daemon on Gaia host and orchestrates clean Swarm recovery.
 
-set -e
-
-# Self-update if running from /usr/local/bin/gaia-restart-docker.sh
-if [ "$0" = "/usr/local/bin/gaia-restart-docker.sh" ]; then
-    UPDATE_URL="https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/docker/restart_docker.sh"
-    TMP_SCRIPT="/tmp/gaia-restart-docker-update.sh"
-    if curl -fsSL --connect-timeout 5 "$UPDATE_URL" -o "$TMP_SCRIPT" 2>/dev/null; then
-        if ! cmp -s "$TMP_SCRIPT" "$0"; then
-            echo "Updating $0 to latest version from GitHub..."
-            mv "$TMP_SCRIPT" "$0"
-            chmod 0755 "$0"
-            exec "$0" "$@"
-        fi
-        rm -f "$TMP_SCRIPT"
-    fi
-fi
-
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Error: This script must be run as root (sudo)."
+    echo "Error: This script must be run as root (sudo)." >&2
     exit 1
 fi
 
-echo "=== [1/3] Flushing Storage Buffers ==="
-# Ensure databases (Postgres, SQLite, Valkey) write pending buffers to disk
-sync
-echo "Buffers synced."
-
-echo "=== [2/3] Restarting Docker Service ==="
-systemctl stop docker.socket docker.service 2>/dev/null || systemctl stop docker
-if command -v ip >/dev/null 2>&1; then
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        case "$line" in
-            *" state DOWN "*|*" state DOWN")
-                iface="${line#*:}"
-                iface="${iface%%:*}"
-                iface="${iface%%@*}"
-                iface="${iface//[[:space:]]/}"
-                case "$iface" in
-                    vx-*)
-                        echo "Removing stale down VXLAN interface: ${iface}"
-                        ip link delete "$iface" 2>/dev/null || true
-                        ;;
-                esac
-                ;;
-        esac
-    done < <(ip -o link show type vxlan 2>/dev/null || true)
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 fi
-systemctl start docker
-echo "Docker daemon restarted."
 
-echo "=== [3/3] Orchestrating Swarm Recovery & Health Convergence ==="
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-SWARM_STARTUP_SCRIPT="${SWARM_STARTUP_SCRIPT:-/usr/local/bin/gaia-swarm-startup.sh}"
+RUN_ROOT=""
+TMP_DIR=""
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
+    fi
+}
+trap cleanup_tmp_dir EXIT
 
-if [ -x "$SWARM_STARTUP_SCRIPT" ]; then
-    "$SWARM_STARTUP_SCRIPT"
-elif [ -f "${SCRIPT_DIR}/../swarm/startup_orchestrator.sh" ]; then
-    bash "${SCRIPT_DIR}/../swarm/startup_orchestrator.sh"
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../yggdrasil_os/__init__.py" ]; then
+    RUN_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+elif [ -n "${YGGDRASIL_OS_ROOT:-}" ]; then
+    if [ ! -f "${YGGDRASIL_OS_ROOT}/yggdrasil_os/__init__.py" ]; then
+        echo "Error: YGGDRASIL_OS_ROOT=${YGGDRASIL_OS_ROOT} does not contain yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="${YGGDRASIL_OS_ROOT}"
 else
-    curl -fsSL https://raw.githubusercontent.com/yggdrasil-lab/yggdrasil-os/main/swarm/startup_orchestrator.sh | bash
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_URL="${YGGDRASIL_OS_ARCHIVE_URL:-https://github.com/yggdrasil-lab/yggdrasil-os/archive/refs/heads/${YGGDRASIL_OS_REF:-main}.tar.gz}"
+    curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/yggdrasil-os.tar.gz"
+    tar -xzf "${TMP_DIR}/yggdrasil-os.tar.gz" -C "${TMP_DIR}"
+    INIT_PATH="$(find "${TMP_DIR}" -maxdepth 3 -path "*/yggdrasil_os/__init__.py" | head -n 1 || true)"
+    if [ -z "${INIT_PATH}" ]; then
+        echo "Error: Downloaded archive from ${ARCHIVE_URL} lacks yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="$(cd "$(dirname "${INIT_PATH}")/.." >/dev/null 2>&1 && pwd)"
 fi
+
+PYTHONPATH="${RUN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m yggdrasil_os restart-docker gaia "$@"

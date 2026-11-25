@@ -1,5 +1,11 @@
 """Yggdrasil OS shared host provisioning and Swarm deployment runtime."""
 
+from yggdrasil_os.cleanup import (
+    CleanupConfig,
+    CleanupResult,
+    cleanup_storage,
+    parse_cleanup_args,
+)
 from yggdrasil_os.convergence import (
     CONVERGENCE_USAGE,
     ConvergenceConfig,
@@ -49,6 +55,21 @@ from yggdrasil_os.provision import (
     install_startup_service,
     provision_host,
 )
+from yggdrasil_os.recovery import (
+    APOLLO_RESTORE_REL_PATH,
+    DEFAULT_APOLLO_RESTORE_SCRIPT,
+    RestartContext,
+    RestartResult,
+    restart_docker,
+    sweep_stale_vxlan_links,
+)
+from yggdrasil_os.recovery_ports import (
+    IpNetlinkPort,
+    NetlinkPort,
+    SubprocessSystemdPort,
+    SystemdPort,
+    VxlanLink,
+)
 from yggdrasil_os.secrets import (
     VERSIONED_SECRET_SUFFIX_RE,
     SecretConfigError,
@@ -59,11 +80,22 @@ from yggdrasil_os.secrets import (
     prune_secrets,
     scoped_secret_pattern,
 )
+from yggdrasil_os.startup import (
+    CORE_SERVICES,
+    StartupContext,
+    StartupResult,
+    run_startup_orchestrator,
+    wait_for_docker_ready,
+)
 
 __all__ = [
+    "APOLLO_RESTORE_REL_PATH",
     "AssetFetchError",
     "AssetFetcher",
     "CONVERGENCE_USAGE",
+    "CORE_SERVICES",
+    "CleanupConfig",
+    "CleanupResult",
     "Clock",
     "CommandExecutionError",
     "CommandResult",
@@ -72,6 +104,7 @@ __all__ = [
     "ConvergenceConfigError",
     "ConvergenceFailureError",
     "ConvergenceResult",
+    "DEFAULT_APOLLO_RESTORE_SCRIPT",
     "DEFAULT_RAW_BASE",
     "DEPLOY_USAGE",
     "DeployConfig",
@@ -80,17 +113,27 @@ __all__ = [
     "DockerPort",
     "HostManifest",
     "IMMUTABLE_DEPLOY_ERROR_RE",
+    "IpNetlinkPort",
     "LocalOrRemoteAssetFetcher",
     "ManifestError",
+    "NetlinkPort",
     "ProvisionContext",
     "ReportedCommandError",
+    "RestartContext",
+    "RestartResult",
     "SecretConfigError",
     "ServiceBaseline",
+    "StartupContext",
+    "StartupResult",
     "SubprocessCommandRunner",
     "SubprocessDockerPort",
+    "SubprocessSystemdPort",
     "SystemClock",
+    "SystemdPort",
     "VERSIONED_SECRET_SUFFIX_RE",
+    "VxlanLink",
     "WAIT_FOR_NETWORK_CONF",
+    "cleanup_storage",
     "compute_secret_name",
     "deploy_stack",
     "dump_diagnostics",
@@ -101,6 +144,7 @@ __all__ = [
     "install_startup_service",
     "load_dotenv",
     "load_manifest",
+    "parse_cleanup_args",
     "parse_convergence_args",
     "parse_deploy_args",
     "parse_secret_base_arg",
@@ -108,6 +152,10 @@ __all__ = [
     "provision_host",
     "prune_secrets",
     "remove_stack",
+    "restart_docker",
+    "run_startup_orchestrator",
     "scoped_secret_pattern",
+    "sweep_stale_vxlan_links",
     "verify_convergence",
+    "wait_for_docker_ready",
 ]

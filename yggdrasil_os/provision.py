@@ -495,17 +495,34 @@ def _run_vault_sweeps(ctx: ProvisionContext, runner: CommandRunner) -> None:
     git_dir = vault_dir / ".git"
     if git_dir.is_dir():
         runner.run(["chown", "-R", owner, str(git_dir)])
-    for rel_name in _FORGE_ARTIFACT_DIRS:
-        for pattern in (f"Forge/*/{rel_name}", f"Forge/*/web/{rel_name}"):
-            for artifact_dir in sorted(vault_dir.glob(pattern)):
-                if artifact_dir.is_dir():
-                    runner.run(["chown", "-R", owner, str(artifact_dir)])
+    artifact_patterns = [
+        template.format(rel_name=rel_name)
+        for rel_name in _FORGE_ARTIFACT_DIRS
+        for template in ("Forge/*/{rel_name}", "Forge/*/web/{rel_name}")
+    ]
+    for pattern in artifact_patterns:
+        _chown_matching_dirs(vault_dir, pattern, owner, runner)
     for pattern in ("Forge/*/node_modules/.vite_root_owned", "Forge/*/web/node_modules/.vite_root_owned"):
-        for stale_dir in sorted(vault_dir.glob(pattern)):
-            if stale_dir.is_symlink():
-                stale_dir.unlink()
-            elif stale_dir.is_dir():
-                shutil.rmtree(stale_dir, ignore_errors=True)
+        _remove_matching_paths(vault_dir, pattern)
+
+
+def _chown_matching_dirs(
+    base_dir: Path,
+    pattern: str,
+    owner: str,
+    runner: CommandRunner,
+) -> None:
+    for artifact_dir in sorted(base_dir.glob(pattern)):
+        if artifact_dir.is_dir():
+            runner.run(["chown", "-R", owner, str(artifact_dir)])
+
+
+def _remove_matching_paths(base_dir: Path, pattern: str) -> None:
+    for stale_dir in sorted(base_dir.glob(pattern)):
+        if stale_dir.is_symlink():
+            stale_dir.unlink()
+        elif stale_dir.is_dir():
+            shutil.rmtree(stale_dir, ignore_errors=True)
 
 
 def _install_asset_file(

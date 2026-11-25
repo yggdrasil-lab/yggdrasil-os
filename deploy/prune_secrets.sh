@@ -1,41 +1,42 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
+# Yggdrasil OS - Versioned Swarm Secret Pruner (Zero-Clone Shim)
 # Usage: ./prune_secrets.sh <SECRET_BASE_NAME>
-# Example: ./prune_secrets.sh "cerberus_admin_token"
 
-SECRET_BASE_NAME="$1"
-
-if [ -z "$SECRET_BASE_NAME" ]; then
-    echo "Error: Secret base name is required." >&2
-    exit 1
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 fi
 
-echo "Pruning secrets with prefix: ${SECRET_BASE_NAME}_"
-
-# 1. Get List of all secrets matching the prefix
-# We look for ${SECRET_BASE_NAME}_ followed by anything
-ALL_SECRETS=$(docker secret ls --format '{{.Name}}' | grep "^${SECRET_BASE_NAME}_")
-
-if [ -z "$ALL_SECRETS" ]; then
-    echo "No secrets found with prefix ${SECRET_BASE_NAME}_"
-    exit 0
-fi
-
-# 2. Get List of secrets currently in use by any service
-# We iterate over all services to find used secrets.
-# Note: This checks the whole swarm, which is safer.
-USED_SECRETS=$(docker service inspect $(docker service ls -q) --format '{{ range .Spec.TaskTemplate.ContainerSpec.Secrets }}{{ .SecretName }} {{ end }}' 2>/dev/null)
-
-# 3. Iterate and Delete
-# We can't delete a secret if it's in use anyway (Docker will error), 
-# but checking first is cleaner and less noisy.
-
-for SECRET in $ALL_SECRETS; do
-    if echo "$USED_SECRETS" | grep -q "$SECRET"; then
-        echo "[KEEP] $SECRET (In use)"
-    else
-        echo "[DELETE] $SECRET"
-        docker secret rm "$SECRET" || echo "Failed to delete $SECRET"
+RUN_ROOT=""
+TMP_DIR=""
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
     fi
-done
+}
+trap cleanup_tmp_dir EXIT
+
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../yggdrasil_os/__init__.py" ]; then
+    RUN_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+elif [ -n "${YGGDRASIL_OS_ROOT:-}" ]; then
+    if [ ! -f "${YGGDRASIL_OS_ROOT}/yggdrasil_os/__init__.py" ]; then
+        echo "Error: YGGDRASIL_OS_ROOT=${YGGDRASIL_OS_ROOT} does not contain yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="${YGGDRASIL_OS_ROOT}"
+else
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_URL="${YGGDRASIL_OS_ARCHIVE_URL:-https://github.com/yggdrasil-lab/yggdrasil-os/archive/refs/heads/${YGGDRASIL_OS_REF:-main}.tar.gz}"
+    curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/yggdrasil-os.tar.gz"
+    tar -xzf "${TMP_DIR}/yggdrasil-os.tar.gz" -C "${TMP_DIR}"
+    INIT_PATH="$(find "${TMP_DIR}" -maxdepth 3 -path "*/yggdrasil_os/__init__.py" | head -n 1 || true)"
+    if [ -z "${INIT_PATH}" ]; then
+        echo "Error: Downloaded archive from ${ARCHIVE_URL} lacks yggdrasil_os/__init__.py" >&2
+        exit 1
+    fi
+    RUN_ROOT="$(cd "$(dirname "${INIT_PATH}")/.." >/dev/null 2>&1 && pwd)"
+fi
+
+PYTHONPATH="${RUN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m yggdrasil_os prune-secrets "$@"

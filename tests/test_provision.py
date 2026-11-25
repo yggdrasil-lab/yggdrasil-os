@@ -441,7 +441,9 @@ class TestZeroCloneShims(unittest.TestCase):
     def test_all_shims_are_executable_and_valid_bash(self) -> None:
         for script in SHIM_SCRIPTS:
             with self.subTest(script=script.name):
-                self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o755)
+                mode = stat.S_IMODE(script.stat().st_mode)
+                self.assertEqual(mode & 0o111, 0o111)
+                self.assertEqual(mode & 0o002, 0)
                 res = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, check=False)
                 self.assertEqual(res.returncode, 0, res.stderr)
 

@@ -1,7 +1,8 @@
 {
   "host": "gaia",
   "remove_paths": [
-    "/usr/local/bin/notify-discord.sh"
+    "/usr/local/bin/notify-discord.sh",
+    "/usr/local/bin/prune-network-endpoints"
   ],
   "pre_scripts": [
     "hosts/install_prerequisites.sh"
@@ -75,7 +76,6 @@
     {"src": "deploy/ensure_secret.sh", "dest": "/usr/local/bin/ensure_secret.sh", "mode": "0755"},
     {"src": "deploy/prune_secrets.sh", "dest": "/usr/local/bin/prune_secrets.sh", "mode": "0755"},
     {"src": "deploy/verify_convergence.sh", "dest": "/usr/local/bin/verify_convergence.sh", "mode": "0755"},
-    {"src": "network/prune_network_endpoints.py", "dest": "/usr/local/bin/prune-network-endpoints", "mode": "0755"},
     {"src": "network/pin_registry_host.sh", "dest": "/usr/local/bin/pin-registry-host", "mode": "0755"},
     {"src": "hosts/scripts/update-github-runner.sh", "dest": "/usr/local/bin/update-github-runner.sh", "mode": "0755"},
     {"src": "hosts/systemd/update-github-runner.service", "dest": "/etc/systemd/system/update-github-runner.service", "mode": "0644"},

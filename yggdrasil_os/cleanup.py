@@ -1,9 +1,8 @@
-"""Gaia Docker, overlay endpoint, registry GC, and systemd journal cleanup."""
+"""Gaia Docker, registry GC, and systemd journal cleanup."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Sequence
 
 from yggdrasil_os.docker_port import DockerPort
@@ -16,7 +15,6 @@ class CleanupConfig:
     """Validated options for Gaia host storage cleanup."""
 
     containers_only: bool = False
-    repo_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -24,7 +22,6 @@ class CleanupResult:
     """Immutable outcome summary from cleanup_storage."""
 
     containers_only: bool
-    pruned_network_endpoints: bool
     ran_registry_gc: bool
 
 
@@ -32,7 +29,6 @@ def parse_cleanup_args(
     argv: Sequence[str],
     *,
     prog: str = "cleanup_storage.sh",
-    repo_root: Path | None = None,
 ) -> CleanupConfig:
     """Parse cleanup CLI arguments and fail loud on unknown flags or positionals."""
     containers_only = False
@@ -41,7 +37,7 @@ def parse_cleanup_args(
             containers_only = True
         else:
             raise ValueError(f"Unknown argument: '{arg}'. Usage: {prog} [--containers-only]")
-    return CleanupConfig(containers_only=containers_only, repo_root=repo_root)
+    return CleanupConfig(containers_only=containers_only)
 
 
 def cleanup_storage(
@@ -51,7 +47,7 @@ def cleanup_storage(
     systemd: SystemdPort,
     runner: CommandRunner,
 ) -> CleanupResult:
-    """Execute Gaia container/volume/image/network/registry/journal cleanup."""
+    """Execute Gaia container/volume/image/registry/journal cleanup."""
     print("=== Gaia Storage Cleanup Started ===")
     _report_disk_space("before", runner)
     _prune_containers_and_volumes(docker)
@@ -61,7 +57,6 @@ def cleanup_storage(
         print("=== Gaia Containers-Only Cleanup Finished ===")
         return CleanupResult(
             containers_only=True,
-            pruned_network_endpoints=False,
             ran_registry_gc=False,
         )
 
@@ -70,14 +65,12 @@ def cleanup_storage(
     print("--- Pruning unused Docker images ---")
     docker.run(["image", "prune", "-a", "-f"], check=True)
 
-    pruned_net = _prune_network_endpoints(config.repo_root, runner)
     ran_gc = _run_registry_gc(docker)
     _vacuum_journal(systemd)
     _report_disk_space("after", runner)
     print("=== Gaia Storage Cleanup Finished ===")
     return CleanupResult(
         containers_only=False,
-        pruned_network_endpoints=pruned_net,
         ran_registry_gc=ran_gc,
     )
 
@@ -95,20 +88,6 @@ def _report_disk_space(phase: str, runner: CommandRunner) -> None:
     res = runner.run(["df", "-h", "/"], check=True)
     if res.stdout:
         print(res.stdout.rstrip())
-
-
-def _prune_network_endpoints(repo_root: Path | None, runner: CommandRunner) -> bool:
-    print("--- Pruning orphaned Docker Swarm overlay network endpoints ---")
-    if runner.has_command("prune-network-endpoints"):
-        runner.run(["prune-network-endpoints", "--all", "--force"], check=False)
-        return True
-    if repo_root is None:
-        return False
-    in_tree = repo_root / "network" / "prune_network_endpoints.py"
-    if not in_tree.is_file():
-        return False
-    runner.run(["python3", str(in_tree), "--all", "--force"], check=False)
-    return True
 
 
 def _run_registry_gc(docker: DockerPort) -> bool:

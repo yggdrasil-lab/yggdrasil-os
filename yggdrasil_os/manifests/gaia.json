@@ -32,6 +32,8 @@
     "/opt/eir/data",
     "/mnt/storage/backups/eir",
     "/opt/iris/data",
+    "/opt/odysseus/data",
+    "/opt/odysseus/mappacks",
     "/opt/palworld/data",
     "/opt/palworld/backups",
     "/mnt/storage/registry"
@@ -60,6 +62,8 @@
     {"path": "/opt/kratos", "owner": "1000:1000"},
     {"path": "/opt/eir", "owner": "1000:1000"},
     {"path": "/opt/iris", "owner": "1000:1000"},
+    {"path": "/opt/odysseus", "owner": "1000:1000"},
+    {"path": "/opt/odysseus/mappacks", "owner": "1000:1000"},
     {"path": "/mnt/storage/registry", "owner": "1000:1000"}
   ],
   "recursive_chmods": [

@@ -125,6 +125,75 @@ def extract_built_images(compose_config_json: str) -> tuple[str, ...]:
     return tuple(seen.keys())
 
 
+def _extract_label_keys(raw_labels: object) -> set[str]:
+    if isinstance(raw_labels, Mapping):
+        return {str(key).strip() for key in raw_labels.keys() if str(key).strip()}
+    if isinstance(raw_labels, list):
+        keys: set[str] = set()
+        for item in raw_labels:
+            if not isinstance(item, str):
+                continue
+            key = item.split("=", 1)[0].strip()
+            if key:
+                keys.add(key)
+        return keys
+    return set()
+
+
+def _check_service_labels(service_name: str, raw_service: object) -> tuple[list[str], list[str]]:
+    if not isinstance(raw_service, Mapping):
+        return [], []
+    errors: list[str] = []
+    warnings: list[str] = []
+    root_keys = _extract_label_keys(raw_service.get("labels"))
+    deploy = raw_service.get("deploy")
+    deploy_keys = _extract_label_keys(deploy.get("labels")) if isinstance(deploy, Mapping) else set()
+
+    if "com.docker.compose.project" in deploy_keys:
+        errors.append(
+            f"Service '{service_name}' places 'com.docker.compose.project' under deploy.labels; "
+            "move it to service root labels."
+        )
+    misplaced = sorted(
+        key for key in root_keys if key.startswith("traefik.") or key.startswith("homepage.")
+    )
+    if misplaced:
+        joined = ", ".join(misplaced)
+        errors.append(
+            f"Service '{service_name}' places {joined} under service root labels; "
+            "move routing/dashboard labels to deploy.labels."
+        )
+    if "com.docker.compose.project" not in root_keys:
+        warnings.append(
+            f"Warning: Service '{service_name}' is missing 'com.docker.compose.project' under service root labels."
+        )
+    return errors, warnings
+
+
+def validate_swarm_labels(compose_config_json: str) -> tuple[str, ...]:
+    """Validate Swarm label placement in resolved `docker compose config --format json` output."""
+    if not compose_config_json or not compose_config_json.strip():
+        raise DeployConfigError("Compose config JSON is empty.")
+    try:
+        data = json.loads(compose_config_json)
+    except json.JSONDecodeError as exc:
+        raise DeployConfigError(f"Invalid compose config JSON: {exc}") from exc
+
+    if not isinstance(data, dict) or not isinstance(data.get("services"), dict):
+        raise DeployConfigError("Compose config JSON must contain a 'services' object.")
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    for service_name, raw_service in data["services"].items():
+        svc_errors, svc_warnings = _check_service_labels(str(service_name), raw_service)
+        errors.extend(svc_errors)
+        warnings.extend(svc_warnings)
+
+    if errors:
+        raise DeployConfigError("\n".join(errors))
+    return tuple(warnings)
+
+
 def remove_stack(
     stack_name: str,
     docker: DockerPort,
@@ -184,7 +253,8 @@ def deploy_stack(
     out_stream.write(f"Starting deployment for stack: {config.stack_name}\n")
     out_stream.write(f"Using compose files: {compose_str}\n")
 
-    pushed = _run_build_and_push(config, docker, clock, child_env, out_stream, err_stream)
+    compose_json = _resolve_and_validate_compose(config, docker, child_env, err_stream)
+    pushed = _run_build_and_push(config, docker, clock, child_env, compose_json, out_stream, err_stream)
     recreated = _run_stack_deploy(config, docker, clock, child_env, out_stream, err_stream)
 
     out_stream.write(
@@ -222,11 +292,32 @@ def _build_child_env(
     return child_env
 
 
+def _resolve_and_validate_compose(
+    config: DeployConfig,
+    docker: DockerPort,
+    child_env: Mapping[str, str],
+    err_stream: TextIO,
+) -> str:
+    compose_flags = [arg for path in config.compose_files for arg in ("-f", str(path))]
+    cfg_res = _run_or_raise(
+        ["compose", *compose_flags, "config", "--format", "json"],
+        docker,
+        child_env,
+        config.work_dir,
+        out_stream=None,
+        err_stream=err_stream,
+    )
+    for warning in validate_swarm_labels(cfg_res.stdout):
+        err_stream.write(f"{warning}\n")
+    return cfg_res.stdout
+
+
 def _run_build_and_push(
     config: DeployConfig,
     docker: DockerPort,
     clock: Clock,
     child_env: Mapping[str, str],
+    compose_json: str,
     out_stream: TextIO,
     err_stream: TextIO,
 ) -> tuple[str, ...]:
@@ -242,15 +333,7 @@ def _run_build_and_push(
         return ()
 
     out_stream.write("Resolving built images to push...\n")
-    cfg_res = _run_or_raise(
-        ["compose", *build_flags, "config", "--format", "json"],
-        docker,
-        child_env,
-        config.work_dir,
-        out_stream=None,
-        err_stream=err_stream,
-    )
-    images = extract_built_images(cfg_res.stdout)
+    images = extract_built_images(compose_json)
     if not images:
         out_stream.write("No built images to push.\n")
         return ()

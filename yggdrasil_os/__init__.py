@@ -28,6 +28,7 @@ from yggdrasil_os.deploy import (
     load_dotenv,
     parse_deploy_args,
     remove_stack,
+    validate_swarm_labels,
 )
 from yggdrasil_os.docker_port import (
     DockerPort,
@@ -156,6 +157,7 @@ __all__ = [
     "run_startup_orchestrator",
     "scoped_secret_pattern",
     "sweep_stale_vxlan_links",
+    "validate_swarm_labels",
     "verify_convergence",
     "wait_for_docker_ready",
 ]

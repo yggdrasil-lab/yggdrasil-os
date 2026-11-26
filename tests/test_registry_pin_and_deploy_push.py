@@ -359,7 +359,7 @@ class _DeployFakeDocker:
     def __init__(
         self,
         *,
-        compose_json: str = "",
+        compose_json: str = '{"services": {}}',
         push_failures_remaining: int = 0,
         deploy_failures_remaining: int = 0,
         deploy_fail_msg: str = "",
@@ -745,6 +745,7 @@ class TestKanbanDecommissionGuards(unittest.TestCase):
             self.mock_bin / "docker",
             "#!/usr/bin/env bash\n"
             'cmd="${1:-}"\n'
+            'if [ "$cmd" = "compose" ]; then printf \'{"services":{}}\\n\'; exit 0; fi\n'
             'if [ "$cmd" = "stack" ] || [ "$cmd" = "secret" ]; then exit 0; fi\n'
             'echo "Unexpected docker invocation: $*" >&2\nexit 99\n',
         )

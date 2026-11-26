@@ -37,6 +37,7 @@ from yggdrasil_os import (  # noqa: E402
     parse_deploy_args,
     prune_secrets,
     remove_stack,
+    validate_swarm_labels,
 )
 
 DEPLOY_SHIMS = (
@@ -240,7 +241,9 @@ class TestDeployLifecycle(unittest.TestCase):
             },
         )
 
-        docker = FakeDockerPort()
+        docker = FakeDockerPort(
+            lambda cmd, _s, _e: CommandResult(0, '{"services": {}}', "") if "config" in cmd else CommandResult(0, "", "")
+        )
         clock = FakeClock()
         cfg = DeployConfig(stack_name="mystack", skip_build=True, work_dir=self.tmpdir)
         out = io.StringIO()
@@ -341,13 +344,116 @@ class TestDeployLifecycle(unittest.TestCase):
         )
 
     def test_cli_propagates_reported_exit_code_on_build_failure(self) -> None:
-        docker = FakeDockerPort(lambda cmd, _s, _e: CommandResult(4, "", "build failed") if "build" in cmd else CommandResult(0, "", ""))
+        def handler(cmd: tuple[str, ...], _s: str | None, _e: Mapping[str, str] | None) -> CommandResult:
+            if "config" in cmd:
+                return CommandResult(0, '{"services": {}}', "")
+            if "build" in cmd:
+                return CommandResult(4, "", "build failed")
+            return CommandResult(0, "", "")
+
+        docker = FakeDockerPort(handler)
         clock = FakeClock()
         err = io.StringIO()
         with self.assertRaises(ReportedCommandError) as ctx:
             deploy_stack(DeployConfig(stack_name="mystack"), docker, clock, env={}, out=io.StringIO(), err=err)
         self.assertEqual(ctx.exception.returncode, 4)
         self.assertIn("build failed", err.getvalue())
+
+    def test_validate_swarm_labels_accepts_dict_and_list_formats_with_zero_warnings(self) -> None:
+        dict_payload = json.dumps(
+            {
+                "services": {
+                    "api": {
+                        "labels": {"com.docker.compose.project": "mystack"},
+                        "deploy": {"labels": {"traefik.enable": "true", "homepage.name": "API"}},
+                    }
+                }
+            }
+        )
+        list_payload = json.dumps(
+            {
+                "services": {
+                    "web": {
+                        "labels": ["com.docker.compose.project=mystack", "app.tier=frontend"],
+                        "deploy": {"labels": ["traefik.enable=true", "homepage.group=Apps"]},
+                    }
+                }
+            }
+        )
+        self.assertEqual(validate_swarm_labels(dict_payload), ())
+        self.assertEqual(validate_swarm_labels(list_payload), ())
+        for bad in ("", "   ", "{bad json", json.dumps({"services": []}), json.dumps({})):
+            with self.subTest(bad=bad):
+                with self.assertRaises(DeployConfigError):
+                    validate_swarm_labels(bad)
+
+    def test_deploy_blocks_on_misplaced_compose_project_or_routing_labels_before_build(self) -> None:
+        bad_project = json.dumps(
+            {
+                "services": {
+                    "api": {
+                        "labels": {"com.docker.compose.project": "mystack"},
+                        "deploy": {"labels": {"com.docker.compose.project": "mystack"}},
+                    }
+                }
+            }
+        )
+        bad_routing = json.dumps(
+            {
+                "services": {
+                    "api": {
+                        "labels": [
+                            "com.docker.compose.project=mystack",
+                            "traefik.enable=true",
+                            "homepage.name=API",
+                        ],
+                    }
+                }
+            }
+        )
+        for label, payload, expected_text in (
+            ("deploy_project", bad_project, "deploy.labels"),
+            ("root_routing", bad_routing, "homepage.name, traefik.enable"),
+        ):
+            with self.subTest(case=label):
+                docker = FakeDockerPort(
+                    lambda cmd, _s, _e, p=payload: CommandResult(0, p, "") if "config" in cmd else CommandResult(0, "", "")
+                )
+                with self.assertRaises(DeployConfigError) as ctx:
+                    deploy_stack(DeployConfig(stack_name="mystack"), docker, FakeClock(), out=io.StringIO(), err=io.StringIO())
+                self.assertIn(expected_text, str(ctx.exception))
+                self.assertEqual([c["args"][0] for c in docker.calls], ["compose"])
+                self.assertFalse(any("build" in c["args"] for c in docker.calls))
+                self.assertFalse(any(c["args"][:2] == ("stack", "deploy") for c in docker.calls))
+
+    def test_deploy_warns_on_missing_project_label_and_reuses_single_config_call(self) -> None:
+        compose_json = json.dumps(
+            {
+                "services": {
+                    "api": {
+                        "image": "reg/api:1",
+                        "build": {"context": "."},
+                        "deploy": {"labels": {"traefik.enable": "true"}},
+                    }
+                }
+            }
+        )
+        docker = FakeDockerPort(
+            lambda cmd, _s, _e: CommandResult(0, compose_json, "") if "config" in cmd else CommandResult(0, "", "")
+        )
+        err = io.StringIO()
+        result = deploy_stack(
+            DeployConfig(stack_name="mystack"),
+            docker,
+            FakeClock(),
+            env={"REGISTRY_PREFIX": "reg/"},
+            out=io.StringIO(),
+            err=err,
+        )
+        self.assertEqual(result.pushed_images, ("reg/api:1",))
+        self.assertIn("Warning: Service 'api' is missing 'com.docker.compose.project'", err.getvalue())
+        config_calls = [c for c in docker.calls if c["args"][0] == "compose" and "config" in c["args"]]
+        self.assertEqual(len(config_calls), 1)
 
 
 class TestDeployZeroCloneShims(unittest.TestCase):

@@ -3,7 +3,9 @@
   "remove_paths": [
     "/usr/local/bin/notify-discord.sh"
   ],
-  "pre_scripts": [],
+  "pre_scripts": [
+    "hosts/install_tailscale.sh"
+  ],
   "directories": [
     "/opt/comics/komga",
     "/opt/comics/suwayomi",
@@ -102,18 +104,26 @@
     {"src": "network/pin_registry_host.sh", "dest": "/usr/local/bin/pin-registry-host", "mode": "0755"},
     {"src": "hosts/scripts/update-github-runner.sh", "dest": "/usr/local/bin/update-github-runner.sh", "mode": "0755"},
     {"src": "hosts/systemd/update-github-runner.service", "dest": "/etc/systemd/system/update-github-runner.service", "mode": "0644"},
-    {"src": "hosts/systemd/update-github-runner.timer", "dest": "/etc/systemd/system/update-github-runner.timer", "mode": "0644"}
+    {"src": "hosts/systemd/update-github-runner.timer", "dest": "/etc/systemd/system/update-github-runner.timer", "mode": "0644"},
+    {"src": "hosts/sysctl/99-tailscale.conf", "dest": "/etc/sysctl.d/99-tailscale.conf", "mode": "0644"},
+    {"src": "hosts/scripts/tailscale-udp-gro.sh", "dest": "/usr/local/bin/tailscale-udp-gro.sh", "mode": "0755"},
+    {"src": "hosts/systemd/tailscale-udp-gro.service", "dest": "/etc/systemd/system/tailscale-udp-gro.service", "mode": "0644"}
   ],
   "central_clis": [],
   "turnkey_symlinks": [],
   "conditional_symlinks": [],
   "git_global_config": {},
   "post_commands": [
-    {"argv": ["/usr/local/bin/pin-registry-host"], "env": {"NODE_ROLE": "worker"}, "map_first_arg": true}
+    {"argv": ["/usr/local/bin/pin-registry-host"], "env": {"NODE_ROLE": "worker"}, "map_first_arg": true},
+    {"argv": ["sysctl", "-p", "/etc/sysctl.d/99-tailscale.conf"]}
   ],
   "systemd": {
     "enable": ["apollo-supply.service"],
-    "enable_now": ["update-github-runner.timer"]
+    "enable_now": [
+      "update-github-runner.timer",
+      "tailscale-udp-gro.service",
+      "tailscaled.service"
+    ]
   },
   "install_cleanup_timer": false,
   "vault_sweeps": false

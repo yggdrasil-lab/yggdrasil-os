@@ -96,7 +96,7 @@
     {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/mnemosyne_associative.py", "link_name": "mnemosyne-associative"},
     {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/mnemosyne_temporal_hygiene.py", "link_name": "mnemosyne-hygiene-audit"},
     {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/mimir_code_graph.py", "link_name": "mimir-code"},
-    {"target": "{vault_path}/Forge/odin/hermes-agent/scripts/forseti_visual_gatekeeper.py", "link_name": "forseti-visual-gatekeeper"},
+    {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forseti_visual_gatekeeper.py", "link_name": "forseti-visual-gatekeeper"},
     {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/publish_pwa_visual_review.py", "link_name": "publish-pwa-visual-review"},
     {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/create_forge_pr.py", "link_name": "create-forge-pr"},
     {"target": "{vault_path}/.agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/verify_forge_pr.py", "link_name": "verify-forge-pr"},

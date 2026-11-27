@@ -51,7 +51,7 @@ EXPECTED_TURNKEY_SYMLINKS = {
     "mnemosyne-associative": "Forge/odin/hermes-agent/scripts/mnemosyne_associative.py",
     "mnemosyne-hygiene-audit": "Forge/odin/hermes-agent/scripts/mnemosyne_temporal_hygiene.py",
     "mimir-code": "Forge/odin/hermes-agent/scripts/mimir_code_graph.py",
-    "forseti-visual-gatekeeper": "Forge/odin/hermes-agent/scripts/forseti_visual_gatekeeper.py",
+    "forseti-visual-gatekeeper": ".agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/forseti_visual_gatekeeper.py",
     "publish-pwa-visual-review": ".agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/publish_pwa_visual_review.py",
     "create-forge-pr": ".agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/create_forge_pr.py",
     "verify-forge-pr": ".agents/plugins/court-of-odin/skills/forge-pr-workflow/scripts/verify_forge_pr.py",
